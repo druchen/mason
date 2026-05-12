@@ -1,0 +1,70 @@
+"""Abstract base for preview layout views."""
+
+from __future__ import annotations
+
+from abc import abstractmethod
+from typing import TYPE_CHECKING
+
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtWidgets import QWidget
+
+if TYPE_CHECKING:
+    from app.core.thumbnail_cache import ThumbnailCache
+
+
+class BaseImageView(QWidget):
+    """Common interface for masonry, grid, filmstrip, list, etc."""
+
+    selection_changed = Signal(str)       # primary selected path
+    fullscreen_requested = Signal(str)    # Space key → open fullscreen on this path
+    delete_requested = Signal(list)       # Delete key → list[str] of paths to delete
+    image_context_menu_requested = Signal(str, QPoint)  # path, global position
+    open_in_photoshop_requested = Signal(str)
+
+    def __init__(self, thumb_cache: "ThumbnailCache", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._thumb_cache = thumb_cache
+        self._thumbnail_size = 128
+        self._show_filenames = True
+        self._tile_background = True
+        self._paths: list[str] = []
+
+    def thumb_cache(self) -> "ThumbnailCache":
+        return self._thumb_cache
+
+    def paths(self) -> list[str]:
+        return list(self._paths)
+
+    def thumbnail_size(self) -> int:
+        return self._thumbnail_size
+
+    def show_filenames(self) -> bool:
+        return self._show_filenames
+
+    def tile_background(self) -> bool:
+        return self._tile_background
+
+    @abstractmethod
+    def set_paths(self, paths: list[str]) -> None:
+        """Replace displayed image paths."""
+
+    def set_thumbnail_size(self, size: int) -> None:
+        self._thumbnail_size = max(48, min(512, int(size)))
+
+    def set_show_filenames(self, show: bool) -> None:
+        self._show_filenames = bool(show)
+
+    def set_tile_background(self, enabled: bool) -> None:
+        self._tile_background = bool(enabled)
+
+    def selected_path(self) -> str | None:
+        return getattr(self, "_selected_path", None)
+
+    def selected_paths(self) -> list[str]:
+        """All currently selected paths (single or multi)."""
+        p = self.selected_path()
+        return [p] if p else []
+
+    def take_preview_focus(self) -> None:
+        """Move keyboard focus here so arrows / shortcuts work reliably."""
+        self.setFocus(Qt.FocusReason.OtherFocusReason)
