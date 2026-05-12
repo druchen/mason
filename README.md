@@ -1,6 +1,6 @@
-# Mason Image Browser
+# Mason
 
-Lightweight cross-platform image browser (Windows & macOS) inspired by Adobe Bridge: folder tree, multiple preview layouts, metadata, keywords/tags, and keyword filtering.
+Lightweight cross-platform image browser (Windows & macOS) including folder tree, multiple preview layouts, metadata, tags, and filtering.
 
 ## Requirements
 

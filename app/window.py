@@ -35,7 +35,7 @@ from app.ui import image_actions
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Mason Image Browser")
+        self.setWindowTitle("Mason")
         self.resize(1280, 800)
 
         self._settings = settings_mod.load_settings()

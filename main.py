@@ -1,4 +1,4 @@
-"""Mason Image Browser — entry point."""
+"""Mason — entry point."""
 
 from __future__ import annotations
 
