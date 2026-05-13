@@ -99,10 +99,10 @@ class _SquareImageHost(QWidget):
     def apply_tile_background(self, enabled: bool) -> None:
         if enabled:
             self._img.setStyleSheet(
-                "background-color: #3c3c3c; color: #888; font-size: 18px; border: none;"
+                "background-color: #3c3c3c; color: #888; font-size: 13pt; border: none;"
             )
         else:
-            self._img.setStyleSheet("background-color: transparent; color: #888; font-size: 18px; border: none;")
+            self._img.setStyleSheet("background-color: transparent; color: #888; font-size: 13pt; border: none;")
 
     def set_selected(self, on: bool) -> None:
         self._overlay.set_outline_visible(on)
@@ -135,7 +135,7 @@ class _SquareTile(QWidget):
         self._name.setMaximumWidth(side)
         self._name.setFixedWidth(side)
         self._name.setVisible(show_filename)
-        self._name.setStyleSheet("color: #ccc; font-size: 11px; background: transparent; border: none;")
+        self._name.setStyleSheet("color: #ccc; font-size: 8pt; background: transparent; border: none;")
         self._apply_name_text()
 
         self._name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -498,3 +498,11 @@ class SquareGridView(BaseImageView):
 
     def take_preview_focus(self) -> None:
         self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def select_primary_path(self, path: str) -> bool:
+        if path not in self._paths:
+            return False
+        self._apply_pick_path(path, False, False, True)
+        self._scroll_into_view(path)
+        self.setFocus()
+        return True

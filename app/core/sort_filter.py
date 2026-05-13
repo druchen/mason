@@ -6,9 +6,12 @@ import hashlib
 import os
 from pathlib import Path
 
+from typing import Literal
+
 from app.core.tags_store import TagsStore
 
 SortKey = str
+TagMatchMode = Literal["all", "any"]
 
 
 def _stat_tuple(path: str) -> tuple[float, int]:
@@ -97,13 +100,22 @@ def filter_by_tags(
     paths: list[str],
     tag_ids: list[int],
     store: TagsStore,
+    match_mode: TagMatchMode = "all",
 ) -> list[str]:
-    """Keep paths that have ALL selected tag IDs."""
+    """Keep paths whose tags match the checked filter (all vs any)."""
     if not tag_ids:
         return list(paths)
-    matching = store.get_images_matching_all_tags(tag_ids)
+    if match_mode == "any":
+        matching = store.get_images_matching_any_tags(tag_ids)
+    else:
+        matching = store.get_images_matching_all_tags(tag_ids)
     if matching is None:
         return list(paths)
-    norm_paths = {str(Path(p).resolve()) for p in paths}
-    kept = norm_paths & matching
-    return [p for p in paths if str(Path(p).resolve()) in kept]
+    pairs: list[tuple[str, str]] = []
+    for p in paths:
+        try:
+            pairs.append((str(Path(p).resolve()), p))
+        except OSError:
+            pairs.append((p, p))
+    kept = matching & {norm for norm, _ in pairs}
+    return [orig for norm, orig in pairs if norm in kept]

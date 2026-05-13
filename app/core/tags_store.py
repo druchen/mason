@@ -36,7 +36,8 @@ class TagsStore:
                 """
                 CREATE TABLE IF NOT EXISTS tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE COLLATE NOCASE
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    sort_order INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -52,11 +53,23 @@ class TagsStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_it_path ON image_tags(image_path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_it_tag  ON image_tags(tag_id)")
+            self._ensure_tags_sort_order_column(conn)
+
+    def _ensure_tags_sort_order_column(self, conn: sqlite3.Connection) -> None:
+        """Upgrade DBs created before ``sort_order`` existed."""
+        cols = [str(r["name"]) for r in conn.execute("PRAGMA table_info(tags)").fetchall()]
+        if "sort_order" in cols:
+            return
+        conn.execute("ALTER TABLE tags ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        rows = conn.execute("SELECT id FROM tags ORDER BY name COLLATE NOCASE").fetchall()
+        for i, r in enumerate(rows):
+            conn.execute("UPDATE tags SET sort_order = ? WHERE id = ?", (i, int(r["id"])))
 
     def _sync_iptc(self, image_path: str) -> None:
         """Write current tags for *image_path* into its IPTC metadata."""
         try:
             from app.core.tags_writer import write_tags
+
             tag_names = [name for _, name in self.get_tags_for_image(image_path)]
             write_tags(image_path, tag_names)
         except Exception:
@@ -73,7 +86,13 @@ class TagsStore:
         with self._connect() as conn:
             cur = conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (name,))
             if cur.rowcount:
-                return int(cur.lastrowid)
+                new_id = int(cur.lastrowid)
+                mx = conn.execute("SELECT MAX(sort_order) AS m FROM tags").fetchone()["m"]
+                conn.execute(
+                    "UPDATE tags SET sort_order = ? WHERE id = ?",
+                    ((mx if mx is not None else -1) + 1, new_id),
+                )
+                return new_id
             row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
             return int(row["id"]) if row else 0
 
@@ -97,9 +116,18 @@ class TagsStore:
     def get_all_tags(self) -> list[tuple[int, str]]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, name FROM tags ORDER BY name COLLATE NOCASE"
+                "SELECT id, name FROM tags ORDER BY sort_order, name COLLATE NOCASE"
             ).fetchall()
         return [(int(r["id"]), str(r["name"])) for r in rows]
+
+    def set_tag_order(self, ordered_ids: list[int]) -> None:
+        """Persist tag list order: ``ordered_ids[i]`` gets ``sort_order = i``."""
+        with self._connect() as conn:
+            for idx, tid in enumerate(ordered_ids):
+                conn.execute(
+                    "UPDATE tags SET sort_order = ? WHERE id = ?",
+                    (idx, tid),
+                )
 
     # ------------------------------------------------------------------
     # Image ↔ tag assignments
@@ -148,7 +176,7 @@ class TagsStore:
                 SELECT t.id, t.name FROM tags t
                 JOIN image_tags it ON it.tag_id = t.id
                 WHERE it.image_path = ?
-                ORDER BY t.name COLLATE NOCASE
+                ORDER BY t.sort_order, t.name COLLATE NOCASE
                 """,
                 (norm,),
             ).fetchall()
@@ -158,6 +186,22 @@ class TagsStore:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT image_path FROM image_tags WHERE tag_id = ?", (tag_id,)
+            ).fetchall()
+        return {str(r["image_path"]) for r in rows}
+
+    def get_images_matching_any_tags(self, tag_ids: Iterable[int]) -> set[str] | None:
+        """Paths that have at least one of the given tag IDs. Empty iterable → None."""
+        ids = list(tag_ids)
+        if not ids:
+            return None
+        with self._connect() as conn:
+            placeholders = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT image_path FROM image_tags
+                WHERE tag_id IN ({placeholders})
+                """,
+                ids,
             ).fetchall()
         return {str(r["image_path"]) for r in rows}
 

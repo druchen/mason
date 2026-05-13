@@ -39,6 +39,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "splitter_left": None,
     "splitter_right": None,
     "photoshop_exe": "",
+    "drop_save_format": "webp",
+    "favorite_folders": [],
 }
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, QMimeData, Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QMainWindow,
@@ -25,11 +25,10 @@ from app.ui.folder_panel import FolderPanel
 from app.ui.info_bar import InfoBar
 from app.ui.tags_panel import TagsPanel
 from app.ui.metadata_panel import MetadataPanel
-from app.ui.nav_bar import NavBar
 from app.ui.preview_panel import PreviewPanel
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.toolbar import MainToolbar
-from app.ui import image_actions
+from app.ui import drop_import, image_actions
 
 
 class MainWindow(QMainWindow):
@@ -49,7 +48,6 @@ class MainWindow(QMainWindow):
         self._photoshop_exe = str(self._settings.get("photoshop_exe") or "")
 
         self._toolbar = MainToolbar()
-        self._nav = NavBar()
         self._folder_panel = FolderPanel()
         self._metadata = MetadataPanel()
         self._preview = PreviewPanel(self._thumb_cache)
@@ -61,9 +59,13 @@ class MainWindow(QMainWindow):
         self._apply_stylesheet()
         self._wire_signals()
 
+        fav_raw = self._settings.get("favorite_folders")
+        fav_list = fav_raw if isinstance(fav_raw, list) else []
+        self._folder_panel.set_favorites(fav_list)
+
         self._toolbar.set_mode(str(self._settings.get("layout_mode") or "square"))
         self._preview.set_layout_mode(str(self._settings.get("layout_mode") or "square"))
-        self._nav.set_sort(
+        self._toolbar.set_sort(
             str(self._settings.get("sort_by") or "name"),
             bool(self._settings.get("sort_ascending", True)),
         )
@@ -74,8 +76,8 @@ class MainWindow(QMainWindow):
             bool(self._settings.get("show_filenames", True)),
         )
 
-        self._nav.set_folder_path(self._folder)
         self._folder_panel.select_path(self._folder)
+        self._preview.set_import_drop_folder(self._folder)
 
         geo = self._settings.get("window_geometry")
         if isinstance(geo, dict) and all(k in geo for k in ("x", "y", "w", "h")):
@@ -119,7 +121,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
 
         root.addWidget(self._toolbar)
-        root.addWidget(self._nav)
 
         self._info.setFixedHeight(40)
 
@@ -151,7 +152,7 @@ class MainWindow(QMainWindow):
     def _apply_stylesheet(self) -> None:
         self.setStyleSheet(
             """
-            QWidget { background-color: #2b2b2b; color: #e0e0e0; font-size: 13px; }
+            QWidget { background-color: #2b2b2b; color: #e0e0e0; }
             QLineEdit, QComboBox, QTextEdit, QListWidget, QTreeView {
                 background-color: #3c3c3c; border: 1px solid #555; border-radius: 4px;
             }
@@ -166,29 +167,85 @@ class MainWindow(QMainWindow):
 
     def _wire_signals(self) -> None:
         self._folder_panel.folder_selected.connect(self._on_folder_selected)
+        self._folder_panel.favorites_changed.connect(self._on_favorites_changed)
         self._toolbar.layout_mode_changed.connect(self._on_layout_mode)
         self._toolbar.search_changed.connect(lambda _: self._refresh_paths())
-        self._nav.sort_changed.connect(lambda _: self._refresh_paths())
-        self._nav.ascending_changed.connect(lambda _: self._refresh_paths())
+        self._toolbar.sort_changed.connect(lambda _: self._refresh_paths())
+        self._toolbar.ascending_changed.connect(lambda _: self._refresh_paths())
         self._preview.selection_changed.connect(self._on_preview_selection)
         self._info.thumbnail_size_changed.connect(self._on_thumb_size)
         self._info.show_filenames_changed.connect(self._on_show_names)
         self._tags.tags_changed.connect(self._on_tags_changed)
+        self._tags.tag_order_changed.connect(self._filter.reload_tags)
         self._filter.filter_changed.connect(self._refresh_paths)
         self._preview.fullscreen_requested.connect(self._open_fullscreen)
         self._preview.delete_requested.connect(self._delete_files)
         self._preview.image_context_menu_requested.connect(self._on_preview_image_context_menu)
         self._preview.open_in_photoshop_requested.connect(self._open_in_photoshop)
-        self._nav.settings_clicked.connect(self._on_settings)
+        self._toolbar.settings_clicked.connect(self._on_settings)
+        self._preview.set_import_drop_handler(self._handle_preview_import_drop)
 
     # ------------------------------------------------------------------
     # Folder / path management
     # ------------------------------------------------------------------
 
+    def _visible_paths(self) -> list[str]:
+        paths = list(self._raw_paths)
+        paths = sort_filter.filter_by_search(paths, self._toolbar.search_query())
+        paths = sort_filter.filter_by_tags(
+            paths,
+            self._filter.selected_tag_ids(),
+            self._store,
+            self._filter.tag_match_mode(),
+        )
+        paths = sort_filter.sort_paths(paths, self._toolbar.sort_key(), self._toolbar.ascending())
+        return paths
+
+    def _path_matches_visible(self, saved: str, visible: list[str]) -> str | None:
+        if saved in visible:
+            return saved
+        try:
+            tr = Path(saved).resolve()
+        except OSError:
+            tr = Path(saved)
+        for p in visible:
+            try:
+                if Path(p).resolve() == tr:
+                    return p
+            except OSError:
+                if p == saved:
+                    return p
+        return None
+
+    def _handle_preview_import_drop(self, mime: QMimeData) -> None:
+        from app.core.tags_importer import import_tags_from_folder
+
+        saved = drop_import.import_from_mime_data(
+            self,
+            Path(self._folder),
+            str(self._settings.get("drop_save_format") or "webp"),
+            mime,
+        )
+        if not saved:
+            return
+        self._raw_paths = file_scanner.scan_folder(self._folder)
+        import_tags_from_folder(self._raw_paths, self._store)
+        self._refresh_paths()
+        last = saved[-1]
+        pick = self._path_matches_visible(last, self._visible_paths())
+        if pick is not None:
+            self._preview.select_primary_path(pick)
+
     def _on_folder_selected(self, path: str) -> None:
         self._folder = path
-        self._nav.set_folder_path(path)
+        self._preview.set_import_drop_folder(self._folder)
+        self._folder_panel.select_path(path)
         self._load_folder(path)
+
+    def _on_favorites_changed(self, data: object) -> None:
+        if isinstance(data, list):
+            self._settings["favorite_folders"] = data
+            self._save_settings()
 
     def _load_folder(self, folder: str) -> None:
         from app.core.tags_importer import import_tags_from_folder
@@ -201,11 +258,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_paths(self) -> None:
         """Re-sort/filter the current folder, preserving the current image selection."""
-        paths = list(self._raw_paths)
-        q = self._toolbar.search_query()
-        paths = sort_filter.filter_by_search(paths, q)
-        paths = sort_filter.filter_by_tags(paths, self._filter.selected_tag_ids(), self._store)
-        paths = sort_filter.sort_paths(paths, self._nav.sort_key(), self._nav.ascending())
+        paths = self._visible_paths()
         self._preview.set_paths(paths)
         self._info.set_item_count(len(paths))
         if self._selected_image and self._selected_image not in paths:
@@ -238,11 +291,16 @@ class MainWindow(QMainWindow):
         self._refresh_paths()
 
     def _on_settings(self) -> None:
-        dlg = SettingsDialog(self._photoshop_exe, self)
+        dlg = SettingsDialog(
+            self._photoshop_exe,
+            str(self._settings.get("drop_save_format") or "webp"),
+            self,
+        )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._photoshop_exe = dlg.photoshop_exe()
         self._settings["photoshop_exe"] = self._photoshop_exe
+        self._settings["drop_save_format"] = dlg.drop_save_format()
         self._save_settings()
 
     def _open_in_photoshop(self, path: str) -> None:
@@ -417,10 +475,12 @@ class MainWindow(QMainWindow):
             "last_folder": self._folder,
             "thumbnail_size": self._info.thumbnail_size(),
             "layout_mode": self._toolbar.current_mode(),
-            "sort_by": self._nav.sort_key(),
-            "sort_ascending": self._nav.ascending(),
+            "sort_by": self._toolbar.sort_key(),
+            "sort_ascending": self._toolbar.ascending(),
             "show_filenames": self._info.filenames_enabled(),
             "photoshop_exe": self._photoshop_exe,
+            "drop_save_format": str(self._settings.get("drop_save_format") or "webp"),
+            "favorite_folders": self._folder_panel.favorites_for_settings(),
             "window_geometry": {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()},
             "splitter_main": self._split_main.sizes(),
             "splitter_left": self._split_left.sizes(),

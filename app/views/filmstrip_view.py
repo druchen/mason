@@ -107,7 +107,7 @@ def apply_tile_background(label: QLabel, enabled: bool) -> None:
     """Filmstrip letterbox stays transparent; tile_background pref is ignored here."""
     del enabled
     label.setStyleSheet(
-        "background-color: transparent; color: #888; font-size: 18px; border: none;"
+        "background-color: transparent; color: #888; font-size: 13pt; border: none;"
     )
 
 
@@ -136,7 +136,7 @@ class _FilmstripThumb(QWidget):
         self._name.setFixedWidth(side)
         self._name.setVisible(show_filename)
         self._name.setStyleSheet(
-            "color: #ccc; font-size: 11px; background: transparent; border: none;"
+            "color: #ccc; font-size: 8pt; background: transparent; border: none;"
         )
         self._name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -572,6 +572,15 @@ class FilmstripView(BaseImageView):
 
     def take_preview_focus(self) -> None:
         self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def select_primary_path(self, path: str) -> bool:
+        if path not in self._paths:
+            return False
+        self._apply_pick_path(path, False, False, True)
+        self._scroll_thumb_into_view(path)
+        self._thumb_strip_request_preview()
+        self.setFocus()
+        return True
 
     def set_paths(self, paths: list[str]) -> None:
         self._paths = list(paths)

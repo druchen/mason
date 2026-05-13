@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Signal
-from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget, QSizePolicy
+from collections.abc import Callable
+
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QMimeData, Signal
+from PySide6.QtGui import QCursor, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget, QSizePolicy
 
 from app.core.thumbnail_cache import ThumbnailCache
 from app.views.base_view import BaseImageView
@@ -12,6 +17,7 @@ from app.views.justified_view import JustifiedView
 from app.views.list_view import ListView
 from app.views.masonry_view import MasonryView
 from app.views.square_view import SquareGridView
+from app.ui.drop_import import mime_looks_external_folder_import
 
 _MODE_ORDER = ("masonry", "justified", "square", "filmstrip", "list")
 
@@ -58,6 +64,94 @@ class PreviewPanel(QWidget):
         self._mode = "square"
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setAcceptDrops(True)
+
+        self._import_drop_cb: Callable[[QMimeData], None] | None = None
+        self._app_drop_filter_installed = False
+        self._import_folder: Path | None = None
+
+    def _import_mime_acceptable(self, mime: QMimeData) -> bool:
+        return bool(
+            self._import_folder
+            and mime_looks_external_folder_import(mime, self._import_folder)
+        )
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._import_mime_acceptable(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._import_mime_acceptable(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        if self._import_drop_cb and self._import_mime_acceptable(event.mimeData()):
+            self._import_drop_cb(event.mimeData())
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
+
+    def set_import_drop_folder(self, folder: str | None) -> None:
+        self._import_folder = Path(folder).resolve() if folder else None
+
+    def set_import_drop_handler(self, fn: Callable[[QMimeData], None] | None) -> None:
+        """Handle drops of images from other apps anywhere over the preview subtree."""
+        app = QApplication.instance()
+        if app is not None and self._app_drop_filter_installed:
+            app.removeEventFilter(self)
+            self._app_drop_filter_installed = False
+        self._import_drop_cb = fn
+        if fn is not None and app is not None:
+            app.installEventFilter(self)
+            self._app_drop_filter_installed = True
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if self._import_drop_cb is None:
+            return super().eventFilter(watched, event)
+        et = event.type()
+        if et not in (
+            QEvent.Type.DragEnter,
+            QEvent.Type.DragMove,
+            QEvent.Type.Drop,
+        ):
+            return super().eventFilter(watched, event)
+
+        gp = QCursor.pos()
+        if isinstance(watched, QWidget):
+            try:
+                ev = event
+                gp = watched.mapToGlobal(ev.position().toPoint())
+            except (AttributeError, TypeError):
+                pass
+        if not self.rect().contains(self.mapFromGlobal(gp)):
+            return super().eventFilter(watched, event)
+
+        if et == QEvent.Type.DragEnter:
+            de = event
+            if isinstance(de, QDragEnterEvent) and self._import_mime_acceptable(de.mimeData()):
+                de.acceptProposedAction()
+                return True
+            return super().eventFilter(watched, event)
+        if et == QEvent.Type.DragMove:
+            dm = event
+            if isinstance(dm, QDragMoveEvent) and self._import_mime_acceptable(dm.mimeData()):
+                dm.acceptProposedAction()
+                return True
+            return super().eventFilter(watched, event)
+        if et == QEvent.Type.Drop:
+            drop = event
+            if isinstance(drop, QDropEvent) and self._import_drop_cb and self._import_mime_acceptable(
+                drop.mimeData()
+            ):
+                self._import_drop_cb(drop.mimeData())
+                drop.acceptProposedAction()
+                return True
+            return super().eventFilter(watched, event)
+        return super().eventFilter(watched, event)
 
     def active_view(self) -> BaseImageView:
         return self._views[self._mode]
@@ -105,3 +199,6 @@ class PreviewPanel(QWidget):
 
     def take_preview_focus(self) -> None:
         self.active_view().take_preview_focus()
+
+    def select_primary_path(self, path: str) -> bool:
+        return self.active_view().select_primary_path(path)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -17,11 +18,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.drop_import import normalize_drop_format
+
 
 class SettingsDialog(QDialog):
     """User preferences. Extend with additional group boxes / rows as needed."""
 
-    def __init__(self, photoshop_exe: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        photoshop_exe: str,
+        drop_save_format: str = "webp",
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(520)
@@ -46,6 +54,28 @@ class SettingsDialog(QDialog):
         ext_lay.addLayout(row)
 
         root.addWidget(external)
+
+        save_grp = QGroupBox("Dropped images (preview panel)")
+        save_lay = QVBoxLayout(save_grp)
+        save_lay.setSpacing(6)
+        save_lay.addWidget(
+            QLabel(
+                "When you drag an image from another app onto the preview area, "
+                "it is converted and saved into the active folder:"
+            )
+        )
+        self._format = QComboBox()
+        for key, label in (
+            ("webp", "WebP (.webp)"),
+            ("jpeg", "JPEG (.jpg)"),
+            ("png", "PNG (.png)"),
+        ):
+            self._format.addItem(label, key)
+        idx = self._format.findData(normalize_drop_format(drop_save_format))
+        self._format.setCurrentIndex(idx if idx >= 0 else 0)
+        save_lay.addWidget(self._format)
+
+        root.addWidget(save_grp)
         root.addStretch(1)
 
         buttons = QDialogButtonBox(
@@ -57,6 +87,10 @@ class SettingsDialog(QDialog):
 
     def photoshop_exe(self) -> str:
         return self._photoshop_edit.text().strip()
+
+    def drop_save_format(self) -> str:
+        data = self._format.currentData()
+        return normalize_drop_format(str(data) if data is not None else "webp")
 
     def _browse_photoshop(self) -> None:
         cur = self._photoshop_edit.text().strip()

@@ -234,5 +234,19 @@ class ListView(BaseImageView):
     def selected_path(self) -> str | None:
         return self._selected_path
 
+    def select_primary_path(self, path: str) -> bool:
+        item = self._path_to_item.get(path)
+        if item is None:
+            return False
+        self._list.blockSignals(True)
+        self._list.clearSelection()
+        item.setSelected(True)
+        self._list.setCurrentItem(item)
+        self._list.blockSignals(False)
+        self._selected_path = path
+        self.selection_changed.emit(path)
+        self._list.scrollToItem(item)
+        return True
+
     def take_preview_focus(self) -> None:
         self._list.setFocus(Qt.FocusReason.OtherFocusReason)

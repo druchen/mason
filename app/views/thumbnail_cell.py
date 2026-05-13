@@ -72,10 +72,10 @@ class ThumbnailCell(QWidget):
     def apply_tile_background(self, enabled: bool) -> None:
         if enabled:
             self._image_label.setStyleSheet(
-                "background-color: #3c3c3c; border-radius: 4px; color: #888; font-size: 18px;"
+                "background-color: #3c3c3c; border-radius: 4px; color: #888; font-size: 13pt;"
             )
         else:
-            self._image_label.setStyleSheet("background-color: transparent; color: #888; font-size: 18px;")
+            self._image_label.setStyleSheet("background-color: transparent; color: #888; font-size: 13pt;")
 
     def set_show_filename(self, show: bool) -> None:
         self._show_filename = show

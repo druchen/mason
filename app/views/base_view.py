@@ -48,6 +48,10 @@ class BaseImageView(QWidget):
     def set_paths(self, paths: list[str]) -> None:
         """Replace displayed image paths."""
 
+    @abstractmethod
+    def select_primary_path(self, path: str) -> bool:
+        """Select ``path`` as the sole primary selection if it appears in the current paths."""
+
     def set_thumbnail_size(self, size: int) -> None:
         self._thumbnail_size = max(48, min(512, int(size)))
 

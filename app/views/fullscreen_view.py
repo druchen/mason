@@ -60,7 +60,7 @@ class FullscreenView(QWidget):
         self._info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._info_label.setStyleSheet(
             "color: #cccccc; background: rgba(0,0,0,160);"
-            "padding: 4px 12px; font-size: 13px;"
+            "padding: 4px 12px; font-size: 10pt;"
         )
         self._info_label.setFixedHeight(30)
 
@@ -105,7 +105,7 @@ class FullscreenView(QWidget):
         except Exception as exc:
             self._img_label.setPixmap(QPixmap())
             self._img_label.setText(f"Cannot load image\n{exc}")
-            self._img_label.setStyleSheet("background: black; color: #888; font-size: 14px;")
+            self._img_label.setStyleSheet("background: black; color: #888; font-size: 11pt;")
 
     def _go_next(self) -> None:
         if self._paths:

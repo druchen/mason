@@ -480,6 +480,14 @@ class JustifiedView(BaseImageView):
     def take_preview_focus(self) -> None:
         self.setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def select_primary_path(self, path: str) -> bool:
+        if path not in self._paths:
+            return False
+        self._apply_pick_path(path, False, False, True)
+        self._scroll_selected_into_view()
+        self.setFocus()
+        return True
+
     def selected_path(self) -> str | None:
         return self._selected_path
 

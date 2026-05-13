@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QModelIndex
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -24,6 +25,7 @@ class TagsPanel(QWidget):
     """Checklist of all tags; check to assign to selected image; add/delete/rename tags."""
 
     tags_changed = Signal()
+    tag_order_changed = Signal()
 
     def __init__(self, store: TagsStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -45,9 +47,17 @@ class TagsPanel(QWidget):
         lay.addLayout(row)
 
         self._list = QListWidget()
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._list.setDragEnabled(True)
+        self._list.setAcceptDrops(True)
+        self._list.setDropIndicatorShown(True)
+        self._list.setDragDropOverwriteMode(False)
+        self._list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self._list.itemChanged.connect(self._on_item_changed)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
+        self._list.model().rowsMoved.connect(self._on_tag_rows_moved)
         lay.addWidget(self._list)
 
         self._reload_list()
@@ -121,11 +131,35 @@ class TagsPanel(QWidget):
         for tid, name in self._store.get_all_tags():
             item = QListWidgetItem(name)
             item.setData(Qt.ItemDataRole.UserRole, tid)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setFlags(
+                item.flags()
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
             item.setCheckState(Qt.CheckState.Unchecked)
             self._list.addItem(item)
         self._list.blockSignals(False)
         self._sync_checks()
+
+    def _on_tag_rows_moved(
+        self,
+        parent: QModelIndex,
+        start: int,
+        end: int,
+        destination_parent: QModelIndex,
+        destination_row: int,
+    ) -> None:
+        """After drag-reorder, persist order to SQLite."""
+        del parent, start, end, destination_parent, destination_row
+        ids: list[int] = []
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            tid = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(tid, int):
+                ids.append(tid)
+        if ids:
+            self._store.set_tag_order(ids)
+        self.tag_order_changed.emit()
 
     def _sync_checks(self) -> None:
         assigned_ids: set[int] = set()
