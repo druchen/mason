@@ -32,7 +32,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "layout_mode": "square",
     "sort_by": "name",
     "sort_ascending": True,
-    "show_filenames": True,
     "tile_background": True,
     "window_geometry": None,  # dict x,y,w,h or None
     "splitter_main": None,

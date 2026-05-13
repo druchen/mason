@@ -13,7 +13,7 @@ from PySide6.QtGui import QImage, QPixmap
 
 from app.core.settings import app_data_dir
 
-_THUMB_BUCKETS = (128, 256, 512)
+_THUMB_BUCKETS = (128, 256, 512, 1024, 2048, 4096)
 
 
 def _bucket_dim(max_dim: int) -> int:

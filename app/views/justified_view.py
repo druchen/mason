@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
-
 from PySide6.QtCore import QPoint, Qt, QEvent, QRect, QTimer, Signal
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -117,7 +115,6 @@ class _JustTile(QFrame):
         path: str,
         pixel_w: int,
         pixel_h: int,
-        show_filename: bool,
         iw: int,
         ih: int,
         parent: QWidget | None = None,
@@ -138,17 +135,10 @@ class _JustTile(QFrame):
         self._img.setScaledContents(False)
         self._img.setFixedSize(pw, ph)
 
-        self._title = QLabel(Path(path).name if show_filename else "")
-        self._title.setWordWrap(True)
-        self._title.setMaximumWidth(pw)
-        self._title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._title.setVisible(show_filename)
-
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
-        lay.setSpacing(2)
+        lay.setSpacing(0)
         lay.addWidget(self._img)
-        lay.addWidget(self._title)
 
         self.setFixedWidth(pw)
 
@@ -156,7 +146,6 @@ class _JustTile(QFrame):
         self._sel_overlay.sync_geometry()
 
         self._img.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._drag_press_pos: QPoint | None = None
 
@@ -169,10 +158,6 @@ class _JustTile(QFrame):
 
     def set_selected(self, selected: bool) -> None:
         self._sel_overlay.set_outline_visible(selected)
-
-    def set_show_filename(self, show: bool) -> None:
-        self._title.setText(Path(self._path).name if show else "")
-        self._title.setVisible(show)
 
     def set_pixmap(self, pm: QPixmap) -> None:
         if pm.isNull():
@@ -255,7 +240,6 @@ class JustifiedView(BaseImageView):
         self._scroll.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, ev) -> bool:
-        """Rebuild after viewport size stabilizes (scrollbar / splitter / HiDPI)."""
         if obj is self._scroll.viewport() and ev.type() == QEvent.Type.Resize:
             self._vp_resize_debounce.start(75)
         return super().eventFilter(obj, ev)
@@ -375,65 +359,72 @@ class JustifiedView(BaseImageView):
             item = self._outer_lay.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
                 w.deleteLater()
         self._tiles.clear()
 
     def _build(self) -> None:
-        self._clear_rows()
-        if not self._paths:
-            return
+        # Hide the scroll content while tearing down and rebuilding tiles so no
+        # widget is ever visible during creation or deletion (stops Windows HWND flash).
+        self._outer.setVisible(False)
+        try:
+            self._clear_rows()
+            if not self._paths:
+                return
 
-        self._clamp_outer_width()
-        R_outer = self._row_outer_width()
-        R_pack = self._row_pack_width()
+            self._clamp_outer_width()
+            R_outer = self._row_outer_width()
+            R_pack = self._row_pack_width()
 
-        dims_map = image_cache.probe_batch(self._paths)
-        meta = [(p, *dims_map.get(p, (1, 1))) for p in self._paths]
+            dims_map = image_cache.probe_batch(self._paths)
+            meta = [(p, *dims_map.get(p, (1, 1))) for p in self._paths]
 
-        target_h = max(48, self._thumbnail_size)
-        rows: list[list[tuple[str, int, int]]] = []
-        cur_row: list[tuple[str, int, int]] = []
+            target_h = max(48, self._thumbnail_size)
+            rows: list[list[tuple[str, int, int]]] = []
+            cur_row: list[tuple[str, int, int]] = []
 
-        for entry in meta:
-            if not cur_row:
-                cur_row.append(entry)
-                continue
+            for entry in meta:
+                if not cur_row:
+                    cur_row.append(entry)
+                    continue
 
-            trial = cur_row + [entry]
-            if self._row_natural_span(target_h, trial) <= R_pack:
-                cur_row = trial
-            else:
+                trial = cur_row + [entry]
+                if self._row_natural_span(target_h, trial) <= R_pack:
+                    cur_row = trial
+                else:
+                    rows.append(cur_row)
+                    cur_row = [entry]
+
+            if cur_row:
                 rows.append(cur_row)
-                cur_row = [entry]
 
-        if cur_row:
-            rows.append(cur_row)
+            for grp in rows:
+                _, widths_and_h = _pack_row(R_pack, GAP, grp)
+                rw = QWidget()
+                rw.setFixedWidth(R_outer)
+                hl = QHBoxLayout(rw)
+                hl.setContentsMargins(SELECTION_SIDE_INSET, 0, SELECTION_SIDE_INSET, 0)
+                hl.setSpacing(GAP)
 
-        for grp in rows:
-            _, widths_and_h = _pack_row(R_pack, GAP, grp)
-            rw = QWidget()
-            rw.setFixedWidth(R_outer)
-            hl = QHBoxLayout(rw)
-            hl.setContentsMargins(SELECTION_SIDE_INSET, 0, SELECTION_SIDE_INSET, 0)
-            hl.setSpacing(GAP)
+                for (path_, w_px, h_px), src in zip(widths_and_h, grp):
+                    path_, iw, ih = src
+                    tile = _JustTile(path_, w_px, h_px, iw, ih)
+                    tile.clicked.connect(self._on_click)
+                    tile.double_clicked.connect(self._on_tile_double_click)
+                    tile.context_menu_requested.connect(self._on_tile_context_menu)
+                    if path_ in self._selected_paths:
+                        tile.set_selected(True)
+                    self._tiles[path_] = tile
+                    cached = self._pixmaps.get(path_)
+                    if cached is not None and not cached.isNull():
+                        tile.set_pixmap(cached)
+                    hl.addWidget(tile)
 
-            for (path_, w_px, h_px), src in zip(widths_and_h, grp):
-                path_, iw, ih = src
-                tile = _JustTile(path_, w_px, h_px, self._show_filenames, iw, ih)
-                tile.clicked.connect(self._on_click)
-                tile.double_clicked.connect(self._on_tile_double_click)
-                tile.context_menu_requested.connect(self._on_tile_context_menu)
-                if path_ in self._selected_paths:
-                    tile.set_selected(True)
-                self._tiles[path_] = tile
-                cached = self._pixmaps.get(path_)
-                if cached is not None and not cached.isNull():
-                    tile.set_pixmap(cached)
-                hl.addWidget(tile)
+                self._outer_lay.addWidget(rw)
 
-            self._outer_lay.addWidget(rw)
-
-        self._outer_lay.addStretch(1)
+            self._outer_lay.addStretch(1)
+        finally:
+            self._outer.setVisible(True)
         QTimer.singleShot(0, self._request_visible_first)
 
     def _request_visible_first(self) -> None:
@@ -514,18 +505,6 @@ class JustifiedView(BaseImageView):
         super().set_thumbnail_size(size, reflow=reflow)
         if reflow:
             self._build()
-
-    def set_show_filenames(self, show: bool) -> None:
-        if show == self._show_filenames:
-            return
-        super().set_show_filenames(show)
-        self.setUpdatesEnabled(False)
-        try:
-            for t in self._tiles.values():
-                t.set_show_filename(show)
-        finally:
-            self.setUpdatesEnabled(True)
-            self.update()
 
     def set_tile_background(self, enabled: bool) -> None:
         super().set_tile_background(enabled)

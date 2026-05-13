@@ -62,7 +62,7 @@ class MainWindow(QMainWindow):
 
         self._toolbar = MainToolbar()
         self._folder_panel = FolderPanel()
-        self._metadata = MetadataPanel()
+        self._metadata = MetadataPanel(self._store)
         self._preview = PreviewPanel(self._thumb_cache)
         self._info = InfoBar()
         self._tags = TagsPanel(self._store)
@@ -75,22 +75,19 @@ class MainWindow(QMainWindow):
         fav_raw = self._settings.get("favorite_folders")
         fav_list = fav_raw if isinstance(fav_raw, list) else []
         self._folder_panel.set_favorites(fav_list)
+        self._preview.set_favorites_tabs(self._folder_panel.favorites_for_settings())
 
         start_mode = str(self._settings.get("layout_mode") or "square")
         if self._locked_mode:
             start_mode = self._locked_mode
         self._toolbar.set_mode(start_mode)
         self._preview.set_layout_mode(start_mode)
-        self._toolbar.set_sort(
+        self._preview.set_sort(
             str(self._settings.get("sort_by") or "name"),
             bool(self._settings.get("sort_ascending", True)),
         )
         self._info.set_thumbnail_size(int(self._settings.get("thumbnail_size") or 128))
-        self._info.set_show_filenames(bool(self._settings.get("show_filenames", True)))
-        self._preview.apply_prefs(
-            int(self._settings.get("thumbnail_size") or 128),
-            bool(self._settings.get("show_filenames", True)),
-        )
+        self._preview.apply_prefs(int(self._settings.get("thumbnail_size") or 128))
 
         self._folder_panel.select_path(self._folder)
         self._preview.set_import_drop_folder(self._folder)
@@ -201,11 +198,12 @@ class MainWindow(QMainWindow):
         self._folder_panel.favorites_changed.connect(self._on_favorites_changed)
         self._toolbar.layout_mode_changed.connect(self._on_layout_mode)
         self._toolbar.search_changed.connect(lambda _: self._refresh_paths())
-        self._toolbar.sort_changed.connect(lambda _: self._refresh_paths())
-        self._toolbar.ascending_changed.connect(lambda _: self._refresh_paths())
+        self._preview.sort_changed.connect(lambda _: self._refresh_paths())
+        self._preview.ascending_changed.connect(lambda _: self._refresh_paths())
+        self._preview.favorite_folder_selected.connect(self._on_folder_selected)
+        self._preview.favorites_order_changed.connect(self._on_preview_favorites_reordered)
         self._preview.selection_changed.connect(self._on_preview_selection)
         self._info.thumbnail_size_changed.connect(self._on_thumb_size)
-        self._info.show_filenames_changed.connect(self._on_show_names)
         self._tags.tags_changed.connect(self._on_tags_changed)
         self._tags.tag_order_changed.connect(self._filter.reload_tags)
         self._filter.filter_changed.connect(self._refresh_paths)
@@ -229,7 +227,7 @@ class MainWindow(QMainWindow):
             self._store,
             self._filter.tag_match_mode(),
         )
-        paths = sort_filter.sort_paths(paths, self._toolbar.sort_key(), self._toolbar.ascending())
+        paths = sort_filter.sort_paths(paths, self._preview.sort_key(), self._preview.ascending())
         return paths
 
     def _path_matches_visible(self, saved: str, visible: list[str]) -> str | None:
@@ -271,12 +269,24 @@ class MainWindow(QMainWindow):
         self._folder = path
         self._preview.set_import_drop_folder(self._folder)
         self._folder_panel.select_path(path)
+        self._preview.sync_favorite_tab_for_path(path)
         self._load_folder(path)
 
     def _on_favorites_changed(self, data: object) -> None:
         if isinstance(data, list):
             self._settings["favorite_folders"] = data
             self._save_settings()
+        self._preview.set_favorites_tabs(self._folder_panel.favorites_for_settings())
+        self._preview.sync_favorite_tab_for_path(self._folder)
+
+    def _on_preview_favorites_reordered(self, ordered: object) -> None:
+        if not isinstance(ordered, list):
+            return
+        self._folder_panel.set_favorites(ordered, emit_changed=False)
+        self._settings["favorite_folders"] = self._folder_panel.favorites_for_settings()
+        self._save_settings()
+        self._preview.set_favorites_tabs(self._folder_panel.favorites_for_settings())
+        self._preview.sync_favorite_tab_for_path(self._folder)
 
     def _load_folder(self, folder: str) -> None:
         from app.core.tags_importer import import_tags_from_folder
@@ -296,6 +306,7 @@ class MainWindow(QMainWindow):
             self._selected_image = None
             self._metadata.clear()
             self._tags.set_selected_image(None)
+        self._preview.sync_favorite_tab_for_path(self._folder)
 
     # ------------------------------------------------------------------
     # Handlers
@@ -323,9 +334,6 @@ class MainWindow(QMainWindow):
             return
         self._preview.set_thumbnail_size(self._pending_thumb_size)
         self._pending_thumb_size = None
-
-    def _on_show_names(self, show: bool) -> None:
-        self._preview.set_show_filenames(show)
 
     def _on_tags_changed(self) -> None:
         self._filter.reload_tags()
@@ -516,9 +524,8 @@ class MainWindow(QMainWindow):
             "last_folder": self._folder,
             "thumbnail_size": self._info.thumbnail_size(),
             "layout_mode": self._toolbar.current_mode(),
-            "sort_by": self._toolbar.sort_key(),
-            "sort_ascending": self._toolbar.ascending(),
-            "show_filenames": self._info.filenames_enabled(),
+            "sort_by": self._preview.sort_key(),
+            "sort_ascending": self._preview.ascending(),
             "photoshop_exe": self._photoshop_exe,
             "drop_save_format": str(self._settings.get("drop_save_format") or "webp"),
             "favorite_folders": self._folder_panel.favorites_for_settings(),

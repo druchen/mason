@@ -8,7 +8,6 @@ from PySide6.QtWidgets import QApplication, QListWidget, QListWidgetItem, QStyle
 
 
 class TagCheckListWidget(QListWidget):
-    """Toggle checkbox on row click; preserve default behavior on the indicator; ignore drag gestures."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -26,7 +25,6 @@ class TagCheckListWidget(QListWidget):
         super().mousePressEvent(event)
 
     def _check_indicator_rect(self, item: QListWidgetItem) -> QRect:
-        """Style rect for the row's check box (PySide6 QListWidget.initStyleOption is not index-based)."""
         opt = QStyleOptionViewItem()
         opt.initFrom(self)
         opt.rect = self.visualItemRect(item)

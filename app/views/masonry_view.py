@@ -19,8 +19,6 @@ Multi-select:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QPoint, Qt, QEvent, QRect, QTimer, Signal
 from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -58,7 +56,6 @@ class _MasonryTile(QFrame):
         col_w: int,
         w: int,
         h: int,
-        show_filename: bool,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -74,20 +71,13 @@ class _MasonryTile(QFrame):
         self._img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._img.setScaledContents(False)
 
-        self._title = QLabel(Path(path).name if show_filename else "")
-        self._title.setWordWrap(True)
-        self._title.setMaximumWidth(col_w)
-        self._title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._title.setVisible(show_filename)
-
         oh = max(1, int(round(col_w * self._h / self._w)))
         self._img.setFixedSize(col_w, oh)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
-        lay.setSpacing(2)
+        lay.setSpacing(0)
         lay.addWidget(self._img)
-        lay.addWidget(self._title)
 
         self._sel_overlay = SelectionOutlineOverlay(self)
         self._sel_overlay.sync_geometry()
@@ -97,7 +87,6 @@ class _MasonryTile(QFrame):
         )
         self._img.setText("…")
         self._img.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setFixedWidth(col_w)
         self._drag_press_pos: QPoint | None = None
 
@@ -110,10 +99,6 @@ class _MasonryTile(QFrame):
 
     def set_selected(self, selected: bool) -> None:
         self._sel_overlay.set_outline_visible(selected)
-
-    def set_show_filename(self, show: bool) -> None:
-        self._title.setText(Path(self._path).name if show else "")
-        self._title.setVisible(show)
 
     def set_pixmap(self, pm: QPixmap) -> None:
         if pm.isNull():
@@ -187,6 +172,7 @@ class MasonryView(BaseImageView):
         self._row.setContentsMargins(sm, 8, sm + RIGHT_EDGE_SLOP_PX, 8)
         self._row.setSpacing(8)
         self._tiles: dict[str, _MasonryTile] = {}
+        self._masonry_layout_sig: tuple[int, int, int] | None = None
 
         self._scroll.setWidget(self._content)
         lay = QVBoxLayout(self)
@@ -331,23 +317,37 @@ class MasonryView(BaseImageView):
             item = self._row.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
                 w.deleteLater()
         self._tiles.clear()
 
     def _reflow(self) -> None:
-        self.setUpdatesEnabled(False)
-        try:
-            if not self._paths:
+        if not self._paths:
+            self._content.setVisible(False)
+            try:
                 self._clear_columns()
-                return
+                self._masonry_layout_sig = None
+            finally:
+                self._content.setVisible(True)
+            self.update()
+            return
 
-            self._clamp_scroll_inner_width()
+        self._clamp_scroll_inner_width()
 
-            vw = self._inner_width()
-            min_col = max(self._thumbnail_size, 80)
-            ncols = max(1, vw // min_col)
-            col_w = max(80, (vw - 8 * (ncols - 1)) // ncols)
+        vw = self._inner_width()
+        min_col = max(self._thumbnail_size, 80)
+        ncols = max(1, vw // min_col)
+        col_w = max(80, (vw - 8 * (ncols - 1)) // ncols)
+        sig = (ncols, col_w, int(self._thumbnail_size))
+        if (
+            self._masonry_layout_sig == sig
+            and len(self._tiles) == len(self._paths)
+            and all(p in self._tiles for p in self._paths)
+        ):
+            return
 
+        self._content.setVisible(False)
+        try:
             self._clear_columns()
             dims = image_cache.probe_batch(self._paths)
 
@@ -367,7 +367,7 @@ class MasonryView(BaseImageView):
                 d = dims.get(path)
                 w, h = d if d else (1, 1)
                 j = min(range(ncols), key=lambda k: heights[k])
-                tile = _MasonryTile(path, col_w, w, h, self._show_filenames)
+                tile = _MasonryTile(path, col_w, w, h)
                 tile.clicked.connect(self._on_tile_clicked)
                 tile.double_clicked.connect(self._on_tile_double_click)
                 tile.context_menu_requested.connect(self._on_tile_context_menu)
@@ -379,13 +379,14 @@ class MasonryView(BaseImageView):
                     tile.set_pixmap(cached)
                 col_layouts[j].addWidget(tile)
                 oh = max(1, int(round(col_w * h / max(1, w))))
-                heights[j] += oh + 8 + (20 if self._show_filenames else 0)
+                heights[j] += oh + 8
 
             for cl in col_layouts:
                 cl.addStretch(1)
+            self._masonry_layout_sig = sig
         finally:
-            self.setUpdatesEnabled(True)
-            self.update()
+            self._content.setVisible(True)
+        self.update()
 
         QTimer.singleShot(0, self._request_visible_first)
 
@@ -477,18 +478,6 @@ class MasonryView(BaseImageView):
         super().set_thumbnail_size(size, reflow=reflow)
         if reflow:
             self._reflow()
-
-    def set_show_filenames(self, show: bool) -> None:
-        if show == self._show_filenames:
-            return
-        super().set_show_filenames(show)
-        self.setUpdatesEnabled(False)
-        try:
-            for t in self._tiles.values():
-                t.set_show_filename(show)
-        finally:
-            self.setUpdatesEnabled(True)
-            self.update()
 
     def set_tile_background(self, enabled: bool) -> None:
         super().set_tile_background(enabled)

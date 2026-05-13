@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QEvent, QSize, QTimer
-from PySide6.QtGui import QIcon, QMouseEvent, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QMouseEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,7 +34,7 @@ class ListView(BaseImageView):
         self._list.setViewMode(QListWidget.ViewMode.ListMode)
         self._list.setMovement(QListWidget.Movement.Static)
         self._list.setSpacing(2)
-        self._list.setUniformItemSizes(True)
+        self._list.setUniformItemSizes(False)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -46,6 +46,10 @@ class ListView(BaseImageView):
         self._list.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_icons())
         self._list.installEventFilter(self)
 
+        self._list_layout_timer = QTimer(self)
+        self._list_layout_timer.setSingleShot(True)
+        self._list_layout_timer.timeout.connect(self._sync_list_item_size_hints)
+
         self._list_drag_press_pos: QPoint | None = None
         self._list_drag_anchor: QListWidgetItem | None = None
 
@@ -53,6 +57,64 @@ class ListView(BaseImageView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._list)
         self._apply_styles()
+
+    def _list_icon_pixel_size(self) -> int:
+        return max(48, min(512, self._thumbnail_size))
+
+    def _fit_pixmap_to_square(self, pm: QPixmap, side: int) -> QPixmap:
+        """Letterbox / pillarbox into a fixed square so list icon column width is uniform."""
+        if pm.isNull() or side <= 0:
+            return QPixmap()
+        out = QPixmap(side, side)
+        out.fill(QColor("#3c3c3c"))
+        scaled = pm.scaled(
+            side,
+            side,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (side - scaled.width()) // 2
+        y = (side - scaled.height()) // 2
+        painter = QPainter(out)
+        painter.drawPixmap(x, y, scaled)
+        painter.end()
+        return out
+
+    def _list_row_height_px(self) -> int:
+        icon_sz = self._list_icon_pixel_size()
+        # Stylesheet item padding (2*2) + border (2*2) + small breathing room
+        chrome = 12
+        chrome += QFontMetrics(self._list.font()).height() + 4
+        return icon_sz + chrome
+
+    def _hint_viewport_width(self) -> int:
+        vw = self._list.viewport().width()
+        if vw < 16:
+            vw = max(0, self._list.width() - self._list.verticalScrollBar().sizeHint().width())
+        return max(120, vw)
+
+    def _sync_list_item_size_hints(self) -> None:
+        if not self._list.count():
+            return
+        w = self._hint_viewport_width()
+        h = self._list_row_height_px()
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            if it is not None:
+                it.setSizeHint(QSize(w, h))
+        self._list.doItemsLayout()
+
+    def _schedule_list_layout_sync(self) -> None:
+        """Coalesce size-hint updates during live resize (text + icons are heavy on Windows)."""
+        self._list_layout_timer.start(55)
+
+    def _flush_list_layout_sync(self) -> None:
+        self._list_layout_timer.stop()
+        self._sync_list_item_size_hints()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._schedule_list_layout_sync()
 
     def _on_list_context_menu(self, pos: QPoint) -> None:
         item = self._list.itemAt(pos)
@@ -144,6 +206,8 @@ class ListView(BaseImageView):
                         self.delete_requested.emit(sel)
                     return True
                 return False
+            elif et == QEvent.Type.Resize:
+                self._schedule_list_layout_sync()
         return super().eventFilter(obj, event)
 
     # ------------------------------------------------------------------
@@ -178,10 +242,18 @@ class ListView(BaseImageView):
         self._pixmaps[path] = pm
         item = self._path_to_item.get(path)
         if item:
-            item.setIcon(QIcon(pm))
+            side = self._list_icon_pixel_size()
+            item.setIcon(QIcon(self._fit_pixmap_to_square(pm, side)))
+
+    def _refresh_all_list_icons(self) -> None:
+        side = self._list_icon_pixel_size()
+        for path, item in self._path_to_item.items():
+            pm = self._pixmaps.get(path)
+            if pm is not None and not pm.isNull():
+                item.setIcon(QIcon(self._fit_pixmap_to_square(pm, side)))
 
     def _request_visible_icons(self) -> None:
-        icon_sz = max(24, min(96, self._thumbnail_size))
+        icon_sz = self._list_icon_pixel_size()
         vp = self._list.viewport()
         vp_rect = vp.rect()
         self.setUpdatesEnabled(False)
@@ -210,31 +282,29 @@ class ListView(BaseImageView):
         self._paths = list(paths)
         self._path_to_item.clear()
         self._list.clear()
-        icon_sz = max(24, min(96, self._thumbnail_size))
+        icon_sz = self._list_icon_pixel_size()
         self._list.setIconSize(QSize(icon_sz, icon_sz))
         for p in paths:
-            item = QListWidgetItem(Path(p).name if self._show_filenames else "")
+            item = QListWidgetItem(Path(p).name)
             item.setData(Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p)
             self._list.addItem(item)
             self._path_to_item[p] = item
             cached = self._pixmaps.get(p)
             if cached is not None and not cached.isNull():
-                item.setIcon(QIcon(cached))
+                item.setIcon(QIcon(self._fit_pixmap_to_square(cached, icon_sz)))
         self._request_visible_icons()
         self._apply_styles()
+        QTimer.singleShot(0, self._flush_list_layout_sync)
 
     def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
         super().set_thumbnail_size(size, reflow=reflow)
-        icon_sz = max(24, min(96, self._thumbnail_size))
+        icon_sz = self._list_icon_pixel_size()
         self._list.setIconSize(QSize(icon_sz, icon_sz))
         if reflow:
+            self._refresh_all_list_icons()
             self._request_visible_icons()
-
-    def set_show_filenames(self, show: bool) -> None:
-        super().set_show_filenames(show)
-        for path, item in self._path_to_item.items():
-            item.setText(Path(path).name if show else "")
+            self._flush_list_layout_sync()
 
     def set_tile_background(self, enabled: bool) -> None:
         super().set_tile_background(enabled)

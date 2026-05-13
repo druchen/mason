@@ -7,10 +7,8 @@ Selection overlay matches masonry/justified."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QPoint, QEvent, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QContextMenuEvent, QFontMetrics, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -120,7 +118,6 @@ class _FilmstripThumb(QWidget):
         self,
         path: str,
         side: int,
-        show_filename: bool,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -129,26 +126,12 @@ class _FilmstripThumb(QWidget):
 
         self._host = _StripImageHost(side, self)
 
-        self._name = QLabel()
-        self._name.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._name.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self._name.setMaximumWidth(side)
-        self._name.setFixedWidth(side)
-        self._name.setVisible(show_filename)
-        self._name.setStyleSheet(
-            "color: #ccc; font-size: 8pt; background: transparent; border: none;"
-        )
-        self._name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
         lay.addWidget(self._host, alignment=Qt.AlignmentFlag.AlignHCenter)
-        lay.addWidget(self._name, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("background: transparent; border: none;")
-        self._apply_name_text()
         self._drag_press_pos: QPoint | None = None
 
     def path(self) -> str:
@@ -157,18 +140,6 @@ class _FilmstripThumb(QWidget):
     def set_side(self, side: int) -> None:
         self._side = side
         self._host.set_side(side)
-        self._name.setMaximumWidth(side)
-        self._name.setFixedWidth(side)
-        self._apply_name_text()
-
-    def set_show_filename(self, show: bool) -> None:
-        self._name.setVisible(show)
-        self._apply_name_text()
-
-    def _apply_name_text(self) -> None:
-        raw = Path(self._path).name
-        fm = QFontMetrics(self._name.font())
-        self._name.setText(fm.elidedText(raw, Qt.TextElideMode.ElideMiddle, max(8, self._side - 2)))
 
     def apply_tile_background(self, enabled: bool) -> None:
         del enabled
@@ -181,11 +152,7 @@ class _FilmstripThumb(QWidget):
         self._host.set_selected(on)
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
-        h = self._side
-        if self._name.isVisible():
-            fm = QFontMetrics(self._name.font())
-            h += 4 + fm.height()
-        return QSize(self._side, h)
+        return QSize(self._side, self._side)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -288,6 +255,13 @@ class FilmstripView(BaseImageView):
         mh = max(140, self._reserved_strip_overhead_vertical() + _MIN_STRIP_SQUARE + 48)
         self._strip_scroll.setMinimumHeight(mh)
 
+        # High-res preview requests are expensive. Calling them on every resize event
+        # (splitter drags, column width changes) floods the thread pool and pixmap updates,
+        # which on Windows can look like rapid blinking / tiny transient windows (HWND churn).
+        self._preview_hi_res_timer = QTimer(self)
+        self._preview_hi_res_timer.setSingleShot(True)
+        self._preview_hi_res_timer.timeout.connect(self._thumb_strip_request_preview)
+
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         if self._paths:
@@ -295,16 +269,9 @@ class FilmstripView(BaseImageView):
 
     # ------------------------------------------------------------------
 
-    def _thumb_caption_reserve(self) -> int:
-        """Height under the square for filename (0 if disabled)."""
-        if not self._show_filenames:
-            return 0
-        fm = QFontMetrics(self.font())
-        return 4 + fm.lineSpacing()
-
     def _reserved_strip_overhead_vertical(self) -> int:
-        """Margins (top+bottom of strip row HBox) + optional caption."""
-        return 2 * _STRIP_MARGIN + self._thumb_caption_reserve()
+        """Margins (top+bottom of strip row HBox)."""
+        return 2 * _STRIP_MARGIN
 
     def _compute_strip_square_side(self, vp_h: int) -> int:
         """Square edge from viewport height, capped by the global thumbnail size slider."""
@@ -466,13 +433,34 @@ class FilmstripView(BaseImageView):
     # ------------------------------------------------------------------
 
     def _thumb_strip_request_preview(self) -> None:
-        if self._selected_path:
-            self._thumb_cache.request(self._selected_path, max(600, self._preview.width()))
+        if not self._selected_path:
+            return
+        pw = max(200, self._preview.width() - 24)
+        ph = max(150, self._preview.height() - 24)
+        dpr = max(1.0, float(self._preview.devicePixelRatio()))
+        # Must match or exceed on-screen box (HiDPI) so we are not upscaling a tiny thumb.
+        req = int(max(600, pw, ph) * dpr + 0.5)
+        self._thumb_cache.request(self._selected_path, req)
+
+    def _refit_preview_from_cache(self) -> None:
+        """Rescale the large preview from RAM during live resize (no worker)."""
+        if not self._selected_path:
+            return
+        pm = self._pixmaps.get(self._selected_path)
+        if pm is not None and not pm.isNull():
+            self._set_preview(pm)
+
+    def _schedule_hi_res_preview_fetch(self) -> None:
+        """Queue a single high-res decode after resize gestures settle."""
+        if not self._selected_path:
+            return
+        self._preview_hi_res_timer.start(140)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._sync_strip_thumb_scale()
-        self._thumb_strip_request_preview()
+        self._refit_preview_from_cache()
+        self._schedule_hi_res_preview_fetch()
 
     # ------------------------------------------------------------------
 
@@ -506,7 +494,7 @@ class FilmstripView(BaseImageView):
             side = self._strip_thumb_side
 
             for p in self._paths:
-                tile = _FilmstripThumb(p, side, self._show_filenames)
+                tile = _FilmstripThumb(p, side)
                 tile.clicked.connect(self._on_thumb_clicked)
                 tile.double_clicked.connect(self._on_strip_thumb_double_click)
                 tile.context_menu_requested.connect(self._on_strip_tile_context_menu)
@@ -635,20 +623,6 @@ class FilmstripView(BaseImageView):
         if reflow:
             self._sync_strip_thumb_scale()
             self._thumb_strip_request_preview()
-
-    def set_show_filenames(self, show: bool) -> None:
-        if show == self._show_filenames:
-            return
-        super().set_show_filenames(show)
-        self.setUpdatesEnabled(False)
-        try:
-            for t in self._tiles.values():
-                t.set_show_filename(show)
-            self._sync_strip_thumb_scale()
-        finally:
-            self.setUpdatesEnabled(True)
-            self.update()
-        self._strip_timer()
 
     def set_tile_background(self, enabled: bool) -> None:
         super().set_tile_background(enabled)

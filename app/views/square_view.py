@@ -1,20 +1,15 @@
 """Square grid: uniform square cells (thumbnail slider = edge length in px).
 
-Layout is a custom scroll grid — QListWidget IconMode + ResizeMode.Adjust shrank
-cells to tiny tiles regardless of the size slider.
-
-Each cell shows the largest inscribed square from the image (center crop: portrait
-crops top/bottom, landscape crops left/right), scaled to fill the square.
-
-Selection uses the same 1 px overlay outline as masonry/justified; filenames sit
-below the square with no gray plate behind them."""
+Each cell shows the largest inscribed square from the image (center crop),
+scaled to fill the square. No filename labels.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QContextMenuEvent, QFontMetrics, QKeyEvent, QMouseEvent, QPixmap
+from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -102,7 +97,9 @@ class _SquareImageHost(QWidget):
                 "background-color: #3c3c3c; color: #888; font-size: 13pt; border: none;"
             )
         else:
-            self._img.setStyleSheet("background-color: transparent; color: #888; font-size: 13pt; border: none;")
+            self._img.setStyleSheet(
+                "background-color: transparent; color: #888; font-size: 13pt; border: none;"
+            )
 
     def set_selected(self, on: bool) -> None:
         self._overlay.set_outline_visible(on)
@@ -120,7 +117,6 @@ class _SquareTile(QWidget):
         self,
         path: str,
         side: int,
-        show_filename: bool,
         tile_background: bool,
         parent: QWidget | None = None,
     ) -> None:
@@ -129,22 +125,10 @@ class _SquareTile(QWidget):
         self._side = side
 
         self._host = _SquareImageHost(side, self)
-        self._name = QLabel()
-        self._name.setWordWrap(False)
-        self._name.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self._name.setMaximumWidth(side)
-        self._name.setFixedWidth(side)
-        self._name.setVisible(show_filename)
-        self._name.setStyleSheet("color: #ccc; font-size: 8pt; background: transparent; border: none;")
-        self._apply_name_text()
-
-        self._name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
         lay.addWidget(self._host, alignment=Qt.AlignmentFlag.AlignHCenter)
-        lay.addWidget(self._name, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.setStyleSheet("background: transparent; border: none;")
         self._host.apply_tile_background(tile_background)
@@ -156,18 +140,6 @@ class _SquareTile(QWidget):
     def set_side(self, side: int) -> None:
         self._side = side
         self._host.set_side(side)
-        self._name.setMaximumWidth(side)
-        self._name.setFixedWidth(side)
-        self._apply_name_text()
-
-    def set_show_filename(self, show: bool) -> None:
-        self._name.setVisible(show)
-        self._apply_name_text()
-
-    def _apply_name_text(self) -> None:
-        raw = Path(self._path).name
-        fm = QFontMetrics(self._name.font())
-        self._name.setText(fm.elidedText(raw, Qt.TextElideMode.ElideMiddle, max(8, self._side - 2)))
 
     def apply_tile_background(self, enabled: bool) -> None:
         self._host.apply_tile_background(enabled)
@@ -222,12 +194,13 @@ class SquareGridView(BaseImageView):
         self._pixmaps: dict[str, QPixmap] = {}
         self._tiles: dict[str, _SquareTile] = {}
         self._ncol = 1
+        self._layout_sig: tuple[int, int] | None = None
 
         self._scroll = QScrollArea()
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Always-on avoids viewport-width oscillation from scrollbar show/hide (reflow storms / flicker).
+        # Always-on avoids viewport-width oscillation from scrollbar show/hide.
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         self._content = QWidget()
@@ -268,26 +241,42 @@ class SquareGridView(BaseImageView):
             item = self._grid.takeAt(0)
             w = item.widget()
             if w:
+                w.hide()
                 w.deleteLater()
         self._tiles.clear()
 
     def _reflow(self) -> None:
-        self.setUpdatesEnabled(False)
+        if not self._paths:
+            self._content.setVisible(False)
+            try:
+                self._clear_tiles()
+                self._layout_sig = None
+            finally:
+                self._content.setVisible(True)
+            self.update()
+            return
+
+        self._sync_content_width()
+        sz = self._thumbnail_size
+        vp_w = self._scroll.viewport().width()
+        usable = max(sz, vp_w - 2 * _MARGIN)
+        new_ncol = max(1, (usable + _GAP) // (sz + _GAP))
+        sig = (sz, new_ncol)
+        if (
+            self._layout_sig == sig
+            and len(self._tiles) == len(self._paths)
+            and all(p in self._tiles for p in self._paths)
+        ):
+            return
+
+        self._content.setVisible(False)
         try:
             self._clear_tiles()
-            if not self._paths:
-                return
-
-            self._sync_content_width()
-            sz = self._thumbnail_size
-            vp_w = self._scroll.viewport().width()
-            usable = max(sz, vp_w - 2 * _MARGIN)
-            stride = sz + _GAP
-            self._ncol = max(1, (usable + _GAP) // stride)
+            self._ncol = new_ncol
 
             for idx, path in enumerate(self._paths):
                 r, c = divmod(idx, self._ncol)
-                tile = _SquareTile(path, sz, self._show_filenames, self._tile_background)
+                tile = _SquareTile(path, sz, self._tile_background)
                 tile.clicked.connect(self._on_tile_clicked)
                 tile.double_clicked.connect(self._on_tile_double_click)
                 tile.context_menu_requested.connect(self._on_tile_context_menu)
@@ -301,9 +290,10 @@ class SquareGridView(BaseImageView):
 
             last_row = (len(self._paths) - 1) // self._ncol if self._paths else 0
             self._grid.setRowStretch(last_row + 1, 1)
+            self._layout_sig = sig
         finally:
-            self.setUpdatesEnabled(True)
-            self.update()
+            self._content.setVisible(True)
+        self.update()
 
         QTimer.singleShot(0, self._request_visible_first)
 
@@ -376,10 +366,16 @@ class SquareGridView(BaseImageView):
 
     def _request_visible_first(self) -> None:
         sz = self._thumbnail_size
+        viewport = self._scroll.viewport()
+        vp_rect = viewport.rect()
         self.setUpdatesEnabled(False)
         try:
-            for p in self._tiles.keys():
-                self._thumb_cache.request(p, sz)
+            for p, tile in self._tiles.items():
+                if tile.parentWidget() is None:
+                    continue
+                tl = viewport.mapFromGlobal(tile.mapToGlobal(QPoint(0, 0)))
+                if vp_rect.intersects(QRect(tl, tile.size())):
+                    self._thumb_cache.request(p, sz)
         finally:
             self.setUpdatesEnabled(True)
             self.update()
@@ -416,7 +412,9 @@ class SquareGridView(BaseImageView):
         new_path = self._paths[ni]
         if shift:
             anchor = (
-                self._anchor_path if self._anchor_path and self._anchor_path in self._paths else self._paths[idx]
+                self._anchor_path
+                if self._anchor_path and self._anchor_path in self._paths
+                else self._paths[idx]
             )
             ai = self._paths.index(anchor)
             lo, hi = sorted([ai, ni])
@@ -482,14 +480,6 @@ class SquareGridView(BaseImageView):
         super().set_thumbnail_size(size, reflow=reflow)
         if reflow:
             self._reflow()
-
-    def _path_to_item_keys(self) -> list[str]:
-        return list(self._tiles.keys())
-
-    def set_show_filenames(self, show: bool) -> None:
-        super().set_show_filenames(show)
-        for t in self._tiles.values():
-            t.set_show_filename(show)
 
     def set_tile_background(self, enabled: bool) -> None:
         super().set_tile_background(enabled)

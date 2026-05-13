@@ -7,6 +7,7 @@ from typing import Any
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileSystemModel,
     QInputDialog,
     QLineEdit,
@@ -62,6 +63,14 @@ class FolderPanel(QWidget):
         self._fav_list.itemActivated.connect(self._on_favorite_item_activated)
         self._fav_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._fav_list.customContextMenuRequested.connect(self._on_favorite_context_menu)
+        self._fav_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._fav_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._fav_list.setDragEnabled(True)
+        self._fav_list.setAcceptDrops(True)
+        self._fav_list.setDropIndicatorShown(True)
+        self._fav_list.setDragDropOverwriteMode(False)
+        self._fav_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._fav_list.model().rowsMoved.connect(self._on_favorite_rows_moved)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._fav_list, "Favorite")
@@ -192,10 +201,35 @@ class FolderPanel(QWidget):
         elif act is rem:
             self._remove_favorite(path)
 
-    def set_favorites(self, data: object) -> None:
+    def _on_favorite_rows_moved(
+        self,
+        parent: QModelIndex,
+        start: int,
+        end: int,
+        destination_parent: QModelIndex,
+        destination_row: int,
+    ) -> None:
+        del parent, start, end, destination_parent, destination_row
+        by_path: dict[str, dict[str, Any]] = {}
+        for e in self._favorites:
+            p = str(e.get("path", ""))
+            if p:
+                by_path[p] = e
+        new_order: list[dict[str, Any]] = []
+        for i in range(self._fav_list.count()):
+            it = self._fav_list.item(i)
+            raw = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(raw, str) and raw in by_path:
+                new_order.append(by_path[raw])
+        if new_order and len(new_order) == len(self._favorites):
+            self._favorites = new_order
+            self.favorites_changed.emit(self.favorites_for_settings())
+
+    def set_favorites(self, data: object, *, emit_changed: bool = True) -> None:
         self._favorites = []
         if not isinstance(data, list):
-            if self._sync_favorite_list():
+            pruned = self._sync_favorite_list()
+            if pruned and emit_changed:
                 self.favorites_changed.emit(self.favorites_for_settings())
             return
         seen: set[str] = set()
@@ -214,7 +248,8 @@ class FolderPanel(QWidget):
                 name = raw.get("name")
                 nm = str(name).strip() if isinstance(name, str) and str(name).strip() else None
                 self._favorites.append(_favorite_entry(n, nm))
-        if self._sync_favorite_list():
+        pruned = self._sync_favorite_list()
+        if pruned and emit_changed:
             self.favorites_changed.emit(self.favorites_for_settings())
 
     def favorites_for_settings(self) -> list[dict[str, Any]]:
