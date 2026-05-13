@@ -52,7 +52,8 @@ class BaseImageView(QWidget):
     def select_primary_path(self, path: str) -> bool:
         """Select ``path`` as the sole primary selection if it appears in the current paths."""
 
-    def set_thumbnail_size(self, size: int) -> None:
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        del reflow
         self._thumbnail_size = max(48, min(512, int(size)))
 
     def set_show_filenames(self, show: bool) -> None:
@@ -72,3 +73,7 @@ class BaseImageView(QWidget):
     def take_preview_focus(self) -> None:
         """Move keyboard focus here so arrows / shortcuts work reliably."""
         self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        """Apply ready thumbnail payload to the current view."""
+        del path, payload

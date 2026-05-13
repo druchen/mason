@@ -6,9 +6,9 @@ from collections.abc import Callable
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QMimeData, Signal
-from PySide6.QtGui import QCursor, QDragEnterEvent, QDragMoveEvent, QDropEvent
-from PySide6.QtWidgets import QApplication, QStackedWidget, QVBoxLayout, QWidget, QSizePolicy
+from PySide6.QtCore import QPoint, QMimeData, Signal
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget, QSizePolicy
 
 from app.core.thumbnail_cache import ThumbnailCache
 from app.views.base_view import BaseImageView
@@ -39,23 +39,14 @@ class PreviewPanel(QWidget):
         self._show_names = True
         self._tile_bg = True
 
-        self._views: dict[str, BaseImageView] = {
-            "masonry":   MasonryView(thumb_cache),
-            "justified": JustifiedView(thumb_cache),
-            "square":    SquareGridView(thumb_cache),
-            "filmstrip": FilmstripView(thumb_cache),
-            "list":      ListView(thumb_cache),
+        self._view_types: dict[str, type[BaseImageView]] = {
+            "masonry": MasonryView,
+            "justified": JustifiedView,
+            "square": SquareGridView,
+            "filmstrip": FilmstripView,
+            "list": ListView,
         }
-        for v in self._views.values():
-            v.selection_changed.connect(self.selection_changed.emit)
-            v.fullscreen_requested.connect(self.fullscreen_requested.emit)
-            v.delete_requested.connect(self.delete_requested.emit)
-            v.image_context_menu_requested.connect(self.image_context_menu_requested.emit)
-            v.open_in_photoshop_requested.connect(self.open_in_photoshop_requested.emit)
-            v.setMinimumWidth(0)
-
-        for mode in _MODE_ORDER:
-            self._stack.addWidget(self._views[mode])
+        self._views: dict[str, BaseImageView | None] = {mode: None for mode in _MODE_ORDER}
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -67,8 +58,8 @@ class PreviewPanel(QWidget):
         self.setAcceptDrops(True)
 
         self._import_drop_cb: Callable[[QMimeData], None] | None = None
-        self._app_drop_filter_installed = False
         self._import_folder: Path | None = None
+        self._cache.thumbnail_ready.connect(self._on_thumbnail_ready)
 
     def _import_mime_acceptable(self, mime: QMimeData) -> bool:
         return bool(
@@ -99,77 +90,58 @@ class PreviewPanel(QWidget):
         self._import_folder = Path(folder).resolve() if folder else None
 
     def set_import_drop_handler(self, fn: Callable[[QMimeData], None] | None) -> None:
-        """Handle drops of images from other apps anywhere over the preview subtree."""
-        app = QApplication.instance()
-        if app is not None and self._app_drop_filter_installed:
-            app.removeEventFilter(self)
-            self._app_drop_filter_installed = False
+        """Handle drops over the preview panel itself."""
         self._import_drop_cb = fn
-        if fn is not None and app is not None:
-            app.installEventFilter(self)
-            self._app_drop_filter_installed = True
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if self._import_drop_cb is None:
-            return super().eventFilter(watched, event)
-        et = event.type()
-        if et not in (
-            QEvent.Type.DragEnter,
-            QEvent.Type.DragMove,
-            QEvent.Type.Drop,
-        ):
-            return super().eventFilter(watched, event)
+    def _wire_view(self, view: BaseImageView) -> None:
+        view.selection_changed.connect(self.selection_changed.emit)
+        view.fullscreen_requested.connect(self.fullscreen_requested.emit)
+        view.delete_requested.connect(self.delete_requested.emit)
+        view.image_context_menu_requested.connect(self.image_context_menu_requested.emit)
+        view.open_in_photoshop_requested.connect(self.open_in_photoshop_requested.emit)
+        view.setMinimumWidth(0)
 
-        gp = QCursor.pos()
-        if isinstance(watched, QWidget):
-            try:
-                ev = event
-                gp = watched.mapToGlobal(ev.position().toPoint())
-            except (AttributeError, TypeError):
-                pass
-        if not self.rect().contains(self.mapFromGlobal(gp)):
-            return super().eventFilter(watched, event)
+    def _on_thumbnail_ready(self, path: str, payload: object) -> None:
+        self.active_view().apply_thumbnail(path, payload)
 
-        if et == QEvent.Type.DragEnter:
-            de = event
-            if isinstance(de, QDragEnterEvent) and self._import_mime_acceptable(de.mimeData()):
-                de.acceptProposedAction()
-                return True
-            return super().eventFilter(watched, event)
-        if et == QEvent.Type.DragMove:
-            dm = event
-            if isinstance(dm, QDragMoveEvent) and self._import_mime_acceptable(dm.mimeData()):
-                dm.acceptProposedAction()
-                return True
-            return super().eventFilter(watched, event)
-        if et == QEvent.Type.Drop:
-            drop = event
-            if isinstance(drop, QDropEvent) and self._import_drop_cb and self._import_mime_acceptable(
-                drop.mimeData()
-            ):
-                self._import_drop_cb(drop.mimeData())
-                drop.acceptProposedAction()
-                return True
-            return super().eventFilter(watched, event)
-        return super().eventFilter(watched, event)
+    def _ensure_view(self, mode: str) -> BaseImageView:
+        existing = self._views.get(mode)
+        if existing is not None:
+            return existing
+        cls = self._view_types.get(mode, SquareGridView)
+        view = cls(self._cache)
+        self._wire_view(view)
+        self._views[mode] = view
+        self._stack.addWidget(view)
+        return view
 
     def active_view(self) -> BaseImageView:
-        return self._views[self._mode]
+        return self._ensure_view(self._mode)
 
     def set_layout_mode(self, mode: str) -> None:
-        if mode not in self._views:
+        if mode not in self._view_types:
             return
         self._mode = mode
-        self._stack.setCurrentIndex(_MODE_ORDER.index(mode))
-        self._apply_to_active()
+        self.setUpdatesEnabled(False)
+        try:
+            self._stack.setCurrentWidget(self._ensure_view(mode))
+            self._apply_to_active()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def set_paths(self, paths: list[str]) -> None:
         self._paths = list(paths)
-        self._apply_to_active()
+        self.setUpdatesEnabled(False)
+        try:
+            self._apply_to_active()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def _apply_to_active(self) -> None:
         v = self.active_view()
-        v.set_thumbnail_size(self._thumb_size)
+        v.set_thumbnail_size(self._thumb_size, reflow=False)
         v.set_show_filenames(self._show_names)
         v.set_tile_background(self._tile_bg)
         v.set_paths(self._paths)
@@ -177,11 +149,21 @@ class PreviewPanel(QWidget):
     def apply_prefs(self, thumb_size: int, show_names: bool) -> None:
         self._thumb_size = thumb_size
         self._show_names = show_names
-        self._apply_to_active()
+        self.setUpdatesEnabled(False)
+        try:
+            self._apply_to_active()
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def set_thumbnail_size(self, size: int) -> None:
         self._thumb_size = size
-        self.active_view().set_thumbnail_size(size)
+        self.setUpdatesEnabled(False)
+        try:
+            self.active_view().set_thumbnail_size(size, reflow=True)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def set_show_filenames(self, show: bool) -> None:
         self._show_names = show

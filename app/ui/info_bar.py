@@ -28,7 +28,9 @@ class InfoBar(QFrame):
         self._slider.setMaximum(512)
         self._slider.setValue(128)
         self._slider.setFixedWidth(200)
-        self._slider.valueChanged.connect(self.thumbnail_size_changed.emit)
+        self._slider.sliderReleased.connect(
+            lambda: self.thumbnail_size_changed.emit(int(self._slider.value()))
+        )
         lay.addWidget(self._slider)
 
         self._names = QCheckBox("File names")

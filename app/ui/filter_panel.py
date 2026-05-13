@@ -6,7 +6,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
-    QListWidget,
     QListWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -14,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from app.core.sort_filter import TagMatchMode
 from app.core.tags_store import TagsStore
+from app.ui.tag_checkbox_list import TagCheckListWidget
 
 _UNCHECK_ALL = "__uncheck_all__"
 
@@ -36,7 +36,7 @@ class FilterPanel(QWidget):
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
         lay.addWidget(self._mode)
 
-        self._list = QListWidget()
+        self._list = TagCheckListWidget()
         self._list.itemChanged.connect(lambda _: self.filter_changed.emit())
         lay.addWidget(self._list)
 

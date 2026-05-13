@@ -13,6 +13,17 @@ from PySide6.QtGui import QImage, QPixmap
 
 from app.core.settings import app_data_dir
 
+_THUMB_BUCKETS = (128, 256, 512)
+
+
+def _bucket_dim(max_dim: int) -> int:
+    """Quantize requested size into small/medium/large buckets."""
+    d = max(48, int(max_dim))
+    for b in _THUMB_BUCKETS:
+        if d <= b:
+            return b
+    return _THUMB_BUCKETS[-1]
+
 
 def thumbnail_payload_to_pixmap(obj: object) -> QPixmap | None:
     """Turn ``thumbnail_ready`` payload into a QPixmap. Call from the GUI thread only."""
@@ -58,12 +69,14 @@ class _ThumbWorker(QRunnable):
         max_dim: int,
         cache_dir: Path,
         owner: "ThumbnailCache",
+        use_cache: bool = True,
     ) -> None:
         super().__init__()
         self._path = path
         self._max_dim = max_dim
         self._cache_dir = cache_dir
         self._owner = owner
+        self._use_cache = use_cache
 
     def run(self) -> None:
         path = self._path
@@ -80,7 +93,7 @@ class _ThumbWorker(QRunnable):
         qimg: QImage | None = None
 
         # Try loading from WebP cache
-        if cache_file.is_file():
+        if self._use_cache and cache_file.is_file():
             try:
                 with Image.open(cache_file) as cached:
                     cached.load()
@@ -106,12 +119,13 @@ class _ThumbWorker(QRunnable):
                     # Save as WebP (better compression than JPEG, lossless option)
                     buf = io.BytesIO()
                     im.convert("RGB").save(buf, format="WEBP", quality=85, method=4)
-                    self._cache_dir.mkdir(parents=True, exist_ok=True)
-                    try:
-                        with open(cache_file, "wb") as f:
-                            f.write(buf.getvalue())
-                    except OSError:
-                        pass
+                    if self._use_cache:
+                        self._cache_dir.mkdir(parents=True, exist_ok=True)
+                        try:
+                            with open(cache_file, "wb") as f:
+                                f.write(buf.getvalue())
+                        except OSError:
+                            pass
             except Exception:
                 self._owner._emit_failed(path)
                 return
@@ -119,7 +133,7 @@ class _ThumbWorker(QRunnable):
         if qimg is None or qimg.isNull():
             self._owner._emit_failed(path)
             return
-        self._owner._emit_ready(path, qimg)
+        self._owner._emit_ready(path, qimg, key)
 
 
 class ThumbnailCache(QObject):
@@ -135,9 +149,26 @@ class ThumbnailCache(QObject):
         self._cache_dir = app_data_dir() / "thumbnails"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._pending: set[str] = set()
+        self._ready_images: dict[str, QImage] = {}
+        self._disabled = os.environ.get("MASON_DISABLE_THUMBNAILS", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._use_original_images = os.environ.get("MASON_USE_ORIGINAL_IMAGES", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
-    def _emit_ready(self, path: str, image: QImage) -> None:
+    def _emit_ready(self, path: str, image: QImage, key: str | None = None) -> None:
         self._pending.discard(path)
+        if key:
+            # Keep a small hot cache in memory so repeated mode switches/resizes
+            # don't spin workers for thumbnails we already decoded this session.
+            self._ready_images[key] = image
         try:
             self.thumbnail_ready.emit(path, image)
         except RuntimeError:
@@ -153,10 +184,30 @@ class ThumbnailCache(QObject):
     @Slot(str, int)
     def request(self, path: str, max_dim: int) -> None:
         """Queue thumbnail generation. Emits thumbnail_ready when done."""
+        if self._disabled:
+            return
+        max_dim = _bucket_dim(max_dim)
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return
+        key = _cache_key(path, mtime, max_dim)
+        ready = self._ready_images.get(key)
+        if ready is not None and not ready.isNull():
+            self._emit_ready(path, ready, key)
+            return
         if path in self._pending:
             return
         self._pending.add(path)
-        self._pool.start(_ThumbWorker(path, max_dim, self._cache_dir, self))
+        self._pool.start(
+            _ThumbWorker(
+                path,
+                max_dim,
+                self._cache_dir,
+                self,
+                use_cache=not self._use_original_images,
+            )
+        )
 
     def clear_pending(self) -> None:
         self._pending.clear()

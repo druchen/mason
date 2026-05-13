@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
@@ -11,6 +12,12 @@ from app.window import MainWindow
 
 
 def main() -> None:
+    # Prefer non-native child widgets on Windows to reduce HWND churn / flicker
+    # when many QLabel tiles are created or reparented. (Avoid AA_UseSoftwareOpenGL;
+    # it can add its own visual issues.)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_NativeWindows, False)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontCreateNativeWidgetSiblings, True)
+
     app = QApplication(sys.argv)
     app.setApplicationName("Mason")
     app.setOrganizationName("Mason")

@@ -230,6 +230,7 @@ class FilmstripView(BaseImageView):
         self._selected_path: str | None = None
         self._selected_paths: set[str] = set()
         self._anchor_path: str | None = None
+        self._pixmaps: dict[str, QPixmap] = {}
         self._tiles: dict[str, _FilmstripThumb] = {}
         self._strip_thumb_side = self._thumbnail_size
 
@@ -280,7 +281,6 @@ class FilmstripView(BaseImageView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(split)
 
-        self._thumb_cache.thumbnail_ready.connect(self._on_thumb_ready)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._split = split
         self._strip_scroll.horizontalScrollBar().valueChanged.connect(self._on_strip_scroll)
@@ -346,19 +346,26 @@ class FilmstripView(BaseImageView):
         resized = prev_side is None or prev_side != side_new
         self._strip_thumb_side = side_new
 
-        self._strip_inner.setFixedHeight(vh)
-        self._strip_inner.setMinimumWidth(vw)
+        self.setUpdatesEnabled(False)
+        try:
+            self._strip_inner.setFixedHeight(vh)
+            self._strip_inner.setMinimumWidth(vw)
 
-        if self._tiles:
-            if resized:
-                for tile in self._tiles.values():
-                    tile.set_side(side_new)
+            if self._tiles:
+                if resized:
+                    for tile in self._tiles.values():
+                        tile.set_side(side_new)
 
-        self._resize_strip_inner_width(side_new)
+            self._resize_strip_inner_width(side_new)
+
+            if self._tiles and resized:
+                for p in self._tiles.keys():
+                    self._thumb_cache.request(p, side_new)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
         if self._tiles and resized:
-            for p in self._tiles.keys():
-                self._thumb_cache.request(p, side_new)
             QTimer.singleShot(0, self._strip_timer)
 
     # ------------------------------------------------------------------
@@ -433,15 +440,19 @@ class FilmstripView(BaseImageView):
         vp_rect = vp.rect()
         sz = max(48, self._strip_thumb_side)
         visible: list[str] = []
-        offscreen: list[str] = []
         for path, tile in self._tiles.items():
-            tl = tile.mapTo(vp, tile.rect().topLeft())
+            if tile.parentWidget() is None:
+                continue
+            tl = vp.mapFromGlobal(tile.mapToGlobal(QPoint(0, 0)))
             if vp_rect.intersects(QRect(tl, tile.size())):
                 visible.append(path)
-            else:
-                offscreen.append(path)
-        for p in visible + offscreen:
-            self._thumb_cache.request(p, sz)
+        self.setUpdatesEnabled(False)
+        try:
+            for p in visible:
+                self._thumb_cache.request(p, sz)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
         if obj is self._strip_scroll.viewport() and ev.type() == QEvent.Type.Resize:
@@ -474,35 +485,44 @@ class FilmstripView(BaseImageView):
         self._tiles.clear()
 
     def _rebuild_strip(self) -> None:
-        self._clear_strip()
-        vp = self._strip_scroll.viewport()
-        vw = max(1, vp.width())
-        vh = vp.height()
+        self.setUpdatesEnabled(False)
+        try:
+            self._clear_strip()
+            vp = self._strip_scroll.viewport()
+            vw = max(1, vp.width())
+            vh = vp.height()
 
-        if not self._paths:
-            self._preview.clear()
-            self._preview.setText("No images")
-            self._strip_thumb_side = self._thumbnail_size
-            self._strip_inner.setFixedSize(vw, max(vh, 1))
-            return
+            if not self._paths:
+                self._preview.clear()
+                self._preview.setText("No images")
+                self._strip_thumb_side = self._thumbnail_size
+                self._strip_inner.setFixedSize(vw, max(vh, 1))
+                return
 
-        self._strip_inner.setMinimumWidth(vw)
-        self._strip_inner.setFixedHeight(max(vh, 1))
+            self._strip_inner.setMinimumWidth(vw)
+            self._strip_inner.setFixedHeight(max(vh, 1))
 
-        self._strip_thumb_side = self._compute_strip_square_side(max(vh, self._reserved_strip_overhead_vertical() + _MIN_STRIP_SQUARE))
-        side = self._strip_thumb_side
+            self._strip_thumb_side = self._compute_strip_square_side(max(vh, self._reserved_strip_overhead_vertical() + _MIN_STRIP_SQUARE))
+            side = self._strip_thumb_side
 
-        for p in self._paths:
-            tile = _FilmstripThumb(p, side, self._show_filenames)
-            tile.clicked.connect(self._on_thumb_clicked)
-            tile.double_clicked.connect(self._on_strip_thumb_double_click)
-            tile.context_menu_requested.connect(self._on_strip_tile_context_menu)
-            if p in self._selected_paths:
-                tile.set_selected(True)
-            self._tiles[p] = tile
-            self._strip_lay.addWidget(tile)
+            for p in self._paths:
+                tile = _FilmstripThumb(p, side, self._show_filenames)
+                tile.clicked.connect(self._on_thumb_clicked)
+                tile.double_clicked.connect(self._on_strip_thumb_double_click)
+                tile.context_menu_requested.connect(self._on_strip_tile_context_menu)
+                if p in self._selected_paths:
+                    tile.set_selected(True)
+                self._tiles[p] = tile
+                cached = self._pixmaps.get(p)
+                if cached is not None and not cached.isNull():
+                    tile.set_pixmap(cached)
+                self._strip_lay.addWidget(tile)
 
-        self._resize_strip_inner_width(side)
+            self._resize_strip_inner_width(side)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
+
         QTimer.singleShot(0, self._strip_timer)
         QTimer.singleShot(0, self._sync_strip_thumb_scale)
 
@@ -541,10 +561,11 @@ class FilmstripView(BaseImageView):
 
     # ------------------------------------------------------------------
 
-    def _on_thumb_ready(self, path: str, pm: object) -> None:
-        pm = thumbnail_payload_to_pixmap(pm)
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
             return
+        self._pixmaps[path] = pm
         tile = self._tiles.get(path)
         if tile:
             tile.set_pixmap(pm)
@@ -583,6 +604,8 @@ class FilmstripView(BaseImageView):
         return True
 
     def set_paths(self, paths: list[str]) -> None:
+        if paths == self._paths:
+            return
         self._paths = list(paths)
         self._selected_paths &= set(paths)
         self._anchor_path = None
@@ -605,12 +628,13 @@ class FilmstripView(BaseImageView):
         if self._selected_path:
             self.selection_changed.emit(self._selected_path)
 
-    def set_thumbnail_size(self, size: int) -> None:
-        super().set_thumbnail_size(size)
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        super().set_thumbnail_size(size, reflow=reflow)
         mh = max(140, self._reserved_strip_overhead_vertical() + _MIN_STRIP_SQUARE + 48)
         self._strip_scroll.setMinimumHeight(mh)
-        self._sync_strip_thumb_scale()
-        self._thumb_strip_request_preview()
+        if reflow:
+            self._sync_strip_thumb_scale()
+            self._thumb_strip_request_preview()
 
     def set_show_filenames(self, show: bool) -> None:
         if show == self._show_filenames:

@@ -173,12 +173,14 @@ class MasonryView(BaseImageView):
         self._selected_path: str | None = None
         self._selected_paths: set[str] = set()
         self._anchor_path: str | None = None
+        self._pixmaps: dict[str, QPixmap] = {}
 
         self._scroll = QScrollArea()
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Keep viewport width stable; AsNeeded can oscillate and trigger endless reflow on Windows.
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._content = QWidget()
         self._row = QHBoxLayout(self._content)
         sm = SIDE_MARGIN_BASE + SELECTION_SIDE_INSET
@@ -192,7 +194,6 @@ class MasonryView(BaseImageView):
         lay.addWidget(self._scroll)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._thumb_cache.thumbnail_ready.connect(self._on_thumb_ready)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._vp_resize_debounce = QTimer(self)
         self._vp_resize_debounce.setSingleShot(True)
@@ -221,10 +222,11 @@ class MasonryView(BaseImageView):
     # Thumbnail / selection handlers
     # ------------------------------------------------------------------
 
-    def _on_thumb_ready(self, path: str, pm: object) -> None:
-        pm = thumbnail_payload_to_pixmap(pm)
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
             return
+        self._pixmaps[path] = pm
         tile = self._tiles.get(path)
         if tile:
             tile.set_pixmap(pm)
@@ -333,49 +335,57 @@ class MasonryView(BaseImageView):
         self._tiles.clear()
 
     def _reflow(self) -> None:
-        if not self._paths:
+        self.setUpdatesEnabled(False)
+        try:
+            if not self._paths:
+                self._clear_columns()
+                return
+
+            self._clamp_scroll_inner_width()
+
+            vw = self._inner_width()
+            min_col = max(self._thumbnail_size, 80)
+            ncols = max(1, vw // min_col)
+            col_w = max(80, (vw - 8 * (ncols - 1)) // ncols)
+
             self._clear_columns()
-            return
+            dims = image_cache.probe_batch(self._paths)
 
-        self._clamp_scroll_inner_width()
+            col_layouts: list[QVBoxLayout] = []
+            heights: list[float] = []
 
-        vw = self._inner_width()
-        min_col = max(self._thumbnail_size, 80)
-        ncols = max(1, vw // min_col)
-        col_w = max(80, (vw - 8 * (ncols - 1)) // ncols)
+            for _ in range(ncols):
+                cw = QWidget()
+                cl = QVBoxLayout(cw)
+                cl.setContentsMargins(0, 0, 0, 0)
+                cl.setSpacing(8)
+                col_layouts.append(cl)
+                heights.append(0.0)
+                self._row.addWidget(cw)
 
-        self._clear_columns()
-        dims = image_cache.probe_batch(self._paths)
+            for path in self._paths:
+                d = dims.get(path)
+                w, h = d if d else (1, 1)
+                j = min(range(ncols), key=lambda k: heights[k])
+                tile = _MasonryTile(path, col_w, w, h, self._show_filenames)
+                tile.clicked.connect(self._on_tile_clicked)
+                tile.double_clicked.connect(self._on_tile_double_click)
+                tile.context_menu_requested.connect(self._on_tile_context_menu)
+                if path in self._selected_paths:
+                    tile.set_selected(True)
+                self._tiles[path] = tile
+                cached = self._pixmaps.get(path)
+                if cached is not None and not cached.isNull():
+                    tile.set_pixmap(cached)
+                col_layouts[j].addWidget(tile)
+                oh = max(1, int(round(col_w * h / max(1, w))))
+                heights[j] += oh + 8 + (20 if self._show_filenames else 0)
 
-        col_layouts: list[QVBoxLayout] = []
-        heights: list[float] = []
-
-        for _ in range(ncols):
-            cw = QWidget()
-            cl = QVBoxLayout(cw)
-            cl.setContentsMargins(0, 0, 0, 0)
-            cl.setSpacing(8)
-            col_layouts.append(cl)
-            heights.append(0.0)
-            self._row.addWidget(cw)
-
-        for path in self._paths:
-            d = dims.get(path)
-            w, h = d if d else (1, 1)
-            j = min(range(ncols), key=lambda k: heights[k])
-            tile = _MasonryTile(path, col_w, w, h, self._show_filenames)
-            tile.clicked.connect(self._on_tile_clicked)
-            tile.double_clicked.connect(self._on_tile_double_click)
-            tile.context_menu_requested.connect(self._on_tile_context_menu)
-            if path in self._selected_paths:
-                tile.set_selected(True)
-            self._tiles[path] = tile
-            col_layouts[j].addWidget(tile)
-            oh = max(1, int(round(col_w * h / max(1, w))))
-            heights[j] += oh + 8 + (20 if self._show_filenames else 0)
-
-        for cl in col_layouts:
-            cl.addStretch(1)
+            for cl in col_layouts:
+                cl.addStretch(1)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
         QTimer.singleShot(0, self._request_visible_first)
 
@@ -383,17 +393,21 @@ class MasonryView(BaseImageView):
         viewport = self._scroll.viewport()
         vp_rect = viewport.rect()
         visible: list[str] = []
-        offscreen: list[str] = []
         for path, tile in self._tiles.items():
-            tile_in_vp = tile.mapTo(viewport, tile.rect().topLeft())
+            if tile.parentWidget() is None:
+                continue
+            tile_in_vp = viewport.mapFromGlobal(tile.mapToGlobal(QPoint(0, 0)))
             if vp_rect.intersects(QRect(tile_in_vp, tile.size())):
                 visible.append(path)
-            else:
-                offscreen.append(path)
-        for p in visible + offscreen:
-            tile = self._tiles.get(p)
-            if isinstance(tile, _MasonryTile):
-                self._thumb_cache.request(p, tile.thumb_dim())
+        self.setUpdatesEnabled(False)
+        try:
+            for p in visible:
+                tile = self._tiles.get(p)
+                if isinstance(tile, _MasonryTile):
+                    self._thumb_cache.request(p, tile.thumb_dim())
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     # ------------------------------------------------------------------
     # Key events
@@ -452,14 +466,17 @@ class MasonryView(BaseImageView):
         return list(self._selected_paths)
 
     def set_paths(self, paths: list[str]) -> None:
+        if paths == self._paths:
+            return
         self._paths = list(paths)
         # Drop stale selections
         self._selected_paths &= set(paths)
         self._reflow()
 
-    def set_thumbnail_size(self, size: int) -> None:
-        super().set_thumbnail_size(size)
-        self._reflow()
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        super().set_thumbnail_size(size, reflow=reflow)
+        if reflow:
+            self._reflow()
 
     def set_show_filenames(self, show: bool) -> None:
         if show == self._show_filenames:

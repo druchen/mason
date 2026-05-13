@@ -34,9 +34,17 @@ from app.ui import drop_import, image_actions
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._did_apply_initial_splitters = False
         self.setWindowTitle("Mason")
         self.resize(1280, 800)
 
+        self.setUpdatesEnabled(False)
+        try:
+            self._init_content()
+        finally:
+            self.setUpdatesEnabled(True)
+
+    def _init_content(self) -> None:
         self._settings = settings_mod.load_settings()
         self._store = TagsStore()
         self._thumb_cache = ThumbnailCache(self)
@@ -46,6 +54,11 @@ class MainWindow(QMainWindow):
         self._selected_image: str | None = None
         self._fullscreen_view = None
         self._photoshop_exe = str(self._settings.get("photoshop_exe") or "")
+        self._locked_mode = os.environ.get("MASON_LOCK_PREVIEW_MODE", "").strip().lower() or None
+        self._pending_thumb_size: int | None = None
+        self._thumb_size_timer = QTimer(self)
+        self._thumb_size_timer.setSingleShot(True)
+        self._thumb_size_timer.timeout.connect(self._apply_pending_thumb_size)
 
         self._toolbar = MainToolbar()
         self._folder_panel = FolderPanel()
@@ -63,8 +76,11 @@ class MainWindow(QMainWindow):
         fav_list = fav_raw if isinstance(fav_raw, list) else []
         self._folder_panel.set_favorites(fav_list)
 
-        self._toolbar.set_mode(str(self._settings.get("layout_mode") or "square"))
-        self._preview.set_layout_mode(str(self._settings.get("layout_mode") or "square"))
+        start_mode = str(self._settings.get("layout_mode") or "square")
+        if self._locked_mode:
+            start_mode = self._locked_mode
+        self._toolbar.set_mode(start_mode)
+        self._preview.set_layout_mode(start_mode)
         self._toolbar.set_sort(
             str(self._settings.get("sort_by") or "name"),
             bool(self._settings.get("sort_ascending", True)),
@@ -83,8 +99,23 @@ class MainWindow(QMainWindow):
         if isinstance(geo, dict) and all(k in geo for k in ("x", "y", "w", "h")):
             self.setGeometry(int(geo["x"]), int(geo["y"]), int(geo["w"]), int(geo["h"]))
 
-        QTimer.singleShot(0, self._apply_splitter_sizes)
         self._load_folder(self._folder)
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._maybe_apply_initial_splitters()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._maybe_apply_initial_splitters()
+
+    def _maybe_apply_initial_splitters(self) -> None:
+        if self._did_apply_initial_splitters:
+            return
+        if self.width() < 80 or self.height() < 80:
+            return
+        self._did_apply_initial_splitters = True
+        self._apply_splitter_sizes()
 
     # ------------------------------------------------------------------
     # Layout
@@ -277,11 +308,21 @@ class MainWindow(QMainWindow):
         self._preview.take_preview_focus()
 
     def _on_layout_mode(self, mode: str) -> None:
+        if self._locked_mode:
+            mode = self._locked_mode
         self._toolbar.set_mode(mode)
         self._preview.set_layout_mode(mode)
 
     def _on_thumb_size(self, size: int) -> None:
-        self._preview.set_thumbnail_size(size)
+        # Coalesce rapid slider ticks into one rebuild.
+        self._pending_thumb_size = int(size)
+        self._thumb_size_timer.start(140)
+
+    def _apply_pending_thumb_size(self) -> None:
+        if self._pending_thumb_size is None:
+            return
+        self._preview.set_thumbnail_size(self._pending_thumb_size)
+        self._pending_thumb_size = None
 
     def _on_show_names(self, show: bool) -> None:
         self._preview.set_show_filenames(show)

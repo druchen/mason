@@ -219,6 +219,7 @@ class SquareGridView(BaseImageView):
         self._selected_path: str | None = None
         self._selected_paths: set[str] = set()
         self._anchor_path: str | None = None
+        self._pixmaps: dict[str, QPixmap] = {}
         self._tiles: dict[str, _SquareTile] = {}
         self._ncol = 1
 
@@ -226,7 +227,8 @@ class SquareGridView(BaseImageView):
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Always-on avoids viewport-width oscillation from scrollbar show/hide (reflow storms / flicker).
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         self._content = QWidget()
         self._grid = QGridLayout(self._content)
@@ -240,7 +242,6 @@ class SquareGridView(BaseImageView):
         root.addWidget(self._scroll)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._thumb_cache.thumbnail_ready.connect(self._on_thumb_ready)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
         self._vp_timer = QTimer(self)
@@ -250,13 +251,8 @@ class SquareGridView(BaseImageView):
 
     def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
         if obj is self._scroll.viewport() and ev.type() == QEvent.Type.Resize:
-            self._vp_timer.start(50)
+            self._vp_timer.start(75)
         return super().eventFilter(obj, ev)
-
-    def showEvent(self, event) -> None:  # type: ignore[override]
-        super().showEvent(event)
-        if self._paths:
-            QTimer.singleShot(0, self._reflow)
 
     # ------------------------------------------------------------------
     # Layout
@@ -276,30 +272,38 @@ class SquareGridView(BaseImageView):
         self._tiles.clear()
 
     def _reflow(self) -> None:
-        self._clear_tiles()
-        if not self._paths:
-            return
+        self.setUpdatesEnabled(False)
+        try:
+            self._clear_tiles()
+            if not self._paths:
+                return
 
-        self._sync_content_width()
-        sz = self._thumbnail_size
-        vp_w = self._scroll.viewport().width()
-        usable = max(sz, vp_w - 2 * _MARGIN)
-        stride = sz + _GAP
-        self._ncol = max(1, (usable + _GAP) // stride)
+            self._sync_content_width()
+            sz = self._thumbnail_size
+            vp_w = self._scroll.viewport().width()
+            usable = max(sz, vp_w - 2 * _MARGIN)
+            stride = sz + _GAP
+            self._ncol = max(1, (usable + _GAP) // stride)
 
-        for idx, path in enumerate(self._paths):
-            r, c = divmod(idx, self._ncol)
-            tile = _SquareTile(path, sz, self._show_filenames, self._tile_background)
-            tile.clicked.connect(self._on_tile_clicked)
-            tile.double_clicked.connect(self._on_tile_double_click)
-            tile.context_menu_requested.connect(self._on_tile_context_menu)
-            if path in self._selected_paths:
-                tile.set_selected(True)
-            self._tiles[path] = tile
-            self._grid.addWidget(tile, r, c, alignment=Qt.AlignmentFlag.AlignTop)
+            for idx, path in enumerate(self._paths):
+                r, c = divmod(idx, self._ncol)
+                tile = _SquareTile(path, sz, self._show_filenames, self._tile_background)
+                tile.clicked.connect(self._on_tile_clicked)
+                tile.double_clicked.connect(self._on_tile_double_click)
+                tile.context_menu_requested.connect(self._on_tile_context_menu)
+                if path in self._selected_paths:
+                    tile.set_selected(True)
+                self._tiles[path] = tile
+                cached = self._pixmaps.get(path)
+                if cached is not None and not cached.isNull():
+                    tile.set_pixmap(cached)
+                self._grid.addWidget(tile, r, c, alignment=Qt.AlignmentFlag.AlignTop)
 
-        last_row = (len(self._paths) - 1) // self._ncol if self._paths else 0
-        self._grid.setRowStretch(last_row + 1, 1)
+            last_row = (len(self._paths) - 1) // self._ncol if self._paths else 0
+            self._grid.setRowStretch(last_row + 1, 1)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
         QTimer.singleShot(0, self._request_visible_first)
 
@@ -358,10 +362,11 @@ class SquareGridView(BaseImageView):
     # Thumbnails
     # ------------------------------------------------------------------
 
-    def _on_thumb_ready(self, path: str, pm: object) -> None:
-        pm = thumbnail_payload_to_pixmap(pm)
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
             return
+        self._pixmaps[path] = pm
         tile = self._tiles.get(path)
         if tile:
             tile.set_pixmap(pm)
@@ -371,18 +376,13 @@ class SquareGridView(BaseImageView):
 
     def _request_visible_first(self) -> None:
         sz = self._thumbnail_size
-        vp = self._scroll.viewport()
-        vp_rect = vp.rect()
-        visible: list[str] = []
-        offscreen: list[str] = []
-        for path, tile in self._tiles.items():
-            top_left = tile.mapTo(vp, tile.rect().topLeft())
-            if vp_rect.intersects(QRect(top_left, tile.size())):
-                visible.append(path)
-            else:
-                offscreen.append(path)
-        for p in visible + offscreen:
-            self._thumb_cache.request(p, sz)
+        self.setUpdatesEnabled(False)
+        try:
+            for p in self._tiles.keys():
+                self._thumb_cache.request(p, sz)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     # ------------------------------------------------------------------
     # Keyboard
@@ -470,15 +470,18 @@ class SquareGridView(BaseImageView):
     # ------------------------------------------------------------------
 
     def set_paths(self, paths: list[str]) -> None:
+        if paths == self._paths:
+            return
         self._paths = list(paths)
         self._selected_paths &= set(paths)
         if self._selected_path not in paths:
             self._selected_path = None
         self._reflow()
 
-    def set_thumbnail_size(self, size: int) -> None:
-        super().set_thumbnail_size(size)
-        self._reflow()
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        super().set_thumbnail_size(size, reflow=reflow)
+        if reflow:
+            self._reflow()
 
     def _path_to_item_keys(self) -> list[str]:
         return list(self._tiles.keys())

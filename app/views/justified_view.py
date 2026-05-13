@@ -227,12 +227,14 @@ class JustifiedView(BaseImageView):
         self._selected_path: str | None = None
         self._selected_paths: set[str] = set()
         self._anchor_path: str | None = None
+        self._pixmaps: dict[str, QPixmap] = {}
 
         self._scroll = QScrollArea()
         self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Keep viewport width stable; AsNeeded can oscillate and trigger endless rebuild on Windows.
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._outer = QWidget()
         self._outer_lay = QVBoxLayout(self._outer)
         om = OUTER_MARGIN
@@ -246,7 +248,6 @@ class JustifiedView(BaseImageView):
 
         self._tiles: dict[str, _JustTile] = {}
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._thumb_cache.thumbnail_ready.connect(self._on_thumb_ready)
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self._vp_resize_debounce = QTimer(self)
         self._vp_resize_debounce.setSingleShot(True)
@@ -276,10 +277,11 @@ class JustifiedView(BaseImageView):
             g += (len(grp) - 1) * GAP
         return g
 
-    def _on_thumb_ready(self, path: str, pm: object) -> None:
-        pm = thumbnail_payload_to_pixmap(pm)
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
             return
+        self._pixmaps[path] = pm
         t = self._tiles.get(path)
         if t:
             t.set_pixmap(pm)
@@ -424,6 +426,9 @@ class JustifiedView(BaseImageView):
                 if path_ in self._selected_paths:
                     tile.set_selected(True)
                 self._tiles[path_] = tile
+                cached = self._pixmaps.get(path_)
+                if cached is not None and not cached.isNull():
+                    tile.set_pixmap(cached)
                 hl.addWidget(tile)
 
             self._outer_lay.addWidget(rw)
@@ -435,18 +440,22 @@ class JustifiedView(BaseImageView):
         viewport = self._scroll.viewport()
         vp_rect = viewport.rect()
         visible: list[str] = []
-        offscreen: list[str] = []
         for path, tile in self._tiles.items():
-            tile_in_vp = tile.mapTo(viewport, tile.rect().topLeft())
+            if tile.parentWidget() is None:
+                continue
+            tile_in_vp = viewport.mapFromGlobal(tile.mapToGlobal(QPoint(0, 0)))
             if vp_rect.intersects(QRect(tile_in_vp, tile.size())):
                 visible.append(path)
-            else:
-                offscreen.append(path)
 
-        for p in visible + offscreen:
-            tile = self._tiles.get(p)
-            if tile:
-                self._thumb_cache.request(p, tile.thumb_dim())
+        self.setUpdatesEnabled(False)
+        try:
+            for p in visible:
+                tile = self._tiles.get(p)
+                if tile:
+                    self._thumb_cache.request(p, tile.thumb_dim())
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     def keyPressEvent(self, event) -> None:
         key = event.key()
@@ -495,13 +504,16 @@ class JustifiedView(BaseImageView):
         return list(self._selected_paths)
 
     def set_paths(self, paths: list[str]) -> None:
+        if paths == self._paths:
+            return
         self._paths = list(paths)
         self._selected_paths &= set(paths)
         self._build()
 
-    def set_thumbnail_size(self, size: int) -> None:
-        super().set_thumbnail_size(size)
-        self._build()
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        super().set_thumbnail_size(size, reflow=reflow)
+        if reflow:
+            self._build()
 
     def set_show_filenames(self, show: bool) -> None:
         if show == self._show_filenames:

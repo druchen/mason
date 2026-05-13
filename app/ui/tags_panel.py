@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMenu,
     QMessageBox,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.tags_store import TagsStore
+from app.ui.tag_checkbox_list import TagCheckListWidget
 
 
 class TagsPanel(QWidget):
@@ -46,7 +46,7 @@ class TagsPanel(QWidget):
         row.addWidget(self._add_btn)
         lay.addLayout(row)
 
-        self._list = QListWidget()
+        self._list = TagCheckListWidget()
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._list.setDragEnabled(True)

@@ -28,6 +28,7 @@ class ListView(BaseImageView):
         super().__init__(thumb_cache, parent)
         self._selected_path: str | None = None
         self._path_to_item: dict[str, QListWidgetItem] = {}
+        self._pixmaps: dict[str, QPixmap] = {}
 
         self._list = QListWidget()
         self._list.setViewMode(QListWidget.ViewMode.ListMode)
@@ -35,19 +36,18 @@ class ListView(BaseImageView):
         self._list.setSpacing(2)
         self._list.setUniformItemSizes(True)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_list_context_menu)
         self._list.itemDoubleClicked.connect(self._on_list_item_double_clicked)
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
+        self._list.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_icons())
         self._list.installEventFilter(self)
 
         self._list_drag_press_pos: QPoint | None = None
         self._list_drag_anchor: QListWidgetItem | None = None
-
-        self._thumb_cache.thumbnail_ready.connect(self._on_thumb_ready)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -171,19 +171,42 @@ class ListView(BaseImageView):
     # Thumbnail delivery (O(1) lookup)
     # ------------------------------------------------------------------
 
-    def _on_thumb_ready(self, path: str, pm: object) -> None:
-        pm = thumbnail_payload_to_pixmap(pm)
+    def apply_thumbnail(self, path: str, payload: object) -> None:
+        pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
             return
+        self._pixmaps[path] = pm
         item = self._path_to_item.get(path)
         if item:
             item.setIcon(QIcon(pm))
+
+    def _request_visible_icons(self) -> None:
+        icon_sz = max(24, min(96, self._thumbnail_size))
+        vp = self._list.viewport()
+        vp_rect = vp.rect()
+        self.setUpdatesEnabled(False)
+        try:
+            for i in range(self._list.count()):
+                item = self._list.item(i)
+                if item is None:
+                    continue
+                r = self._list.visualItemRect(item)
+                if not r.isValid() or not vp_rect.intersects(r):
+                    continue
+                p = item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(p, str):
+                    self._thumb_cache.request(p, icon_sz)
+        finally:
+            self.setUpdatesEnabled(True)
+            self.update()
 
     # ------------------------------------------------------------------
     # BaseImageView interface
     # ------------------------------------------------------------------
 
     def set_paths(self, paths: list[str]) -> None:
+        if paths == self._paths:
+            return
         self._paths = list(paths)
         self._path_to_item.clear()
         self._list.clear()
@@ -195,15 +218,18 @@ class ListView(BaseImageView):
             item.setToolTip(p)
             self._list.addItem(item)
             self._path_to_item[p] = item
-            self._thumb_cache.request(p, icon_sz)
+            cached = self._pixmaps.get(p)
+            if cached is not None and not cached.isNull():
+                item.setIcon(QIcon(cached))
+        self._request_visible_icons()
         self._apply_styles()
 
-    def set_thumbnail_size(self, size: int) -> None:
-        super().set_thumbnail_size(size)
+    def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
+        super().set_thumbnail_size(size, reflow=reflow)
         icon_sz = max(24, min(96, self._thumbnail_size))
         self._list.setIconSize(QSize(icon_sz, icon_sz))
-        for p in self._path_to_item:
-            self._thumb_cache.request(p, icon_sz)
+        if reflow:
+            self._request_visible_icons()
 
     def set_show_filenames(self, show: bool) -> None:
         super().set_show_filenames(show)

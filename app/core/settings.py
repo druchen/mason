@@ -44,6 +44,56 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+def _sanitize_settings(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data)
+
+    # Prevent pathological startup cost from extreme thumbnail sizes.
+    try:
+        thumb = int(out.get("thumbnail_size", DEFAULT_SETTINGS["thumbnail_size"]))
+    except (TypeError, ValueError):
+        thumb = int(DEFAULT_SETTINGS["thumbnail_size"])
+    out["thumbnail_size"] = max(48, min(256, thumb))
+
+    # Drop invalid/absurd window geometry and splitter payloads.
+    geo = out.get("window_geometry")
+    if not isinstance(geo, dict):
+        out["window_geometry"] = None
+    else:
+        try:
+            w = int(geo.get("w", 0))
+            h = int(geo.get("h", 0))
+            x = int(geo.get("x", 0))
+            y = int(geo.get("y", 0))
+        except (TypeError, ValueError):
+            out["window_geometry"] = None
+        else:
+            if w < 600 or h < 400 or w > 10000 or h > 10000:
+                out["window_geometry"] = None
+            else:
+                out["window_geometry"] = {"x": x, "y": y, "w": w, "h": h}
+
+    for key, expected_len in (("splitter_main", 3), ("splitter_left", 2), ("splitter_right", 2)):
+        raw = out.get(key)
+        if not isinstance(raw, list) or len(raw) != expected_len:
+            out[key] = None
+            continue
+        vals: list[int] = []
+        ok = True
+        for v in raw:
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                ok = False
+                break
+            if iv <= 0 or iv > 20000:
+                ok = False
+                break
+            vals.append(iv)
+        out[key] = vals if ok else None
+
+    return out
+
+
 def load_settings() -> dict[str, Any]:
     path = settings_path()
     if not path.is_file():
@@ -55,7 +105,7 @@ def load_settings() -> dict[str, Any]:
         return dict(DEFAULT_SETTINGS)
     merged = dict(DEFAULT_SETTINGS)
     merged.update(data)
-    return merged
+    return _sanitize_settings(merged)
 
 
 def save_settings(data: dict[str, Any]) -> None:
