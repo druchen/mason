@@ -44,7 +44,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 # Must match app.ui.toolbar.MainToolbar.MODES (avoid importing Qt from here).
-KNOWN_LAYOUT_MODES: tuple[str, ...] = ("masonry", "justified", "square", "filmstrip", "list")
+KNOWN_LAYOUT_MODES: tuple[str, ...] = ("essential", "masonry", "justified", "square", "filmstrip", "list")
 
 
 def _validate_splitter_list(raw: Any, expected_len: int) -> list[int] | None:

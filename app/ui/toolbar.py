@@ -44,7 +44,7 @@ class MainToolbar(QFrame):
     search_changed = Signal(str)
     settings_clicked = Signal()
 
-    MODES = ["masonry", "justified", "square", "filmstrip", "list"]
+    MODES = ["essential", "masonry", "justified", "square", "filmstrip", "list"]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, Qt, QEvent, QSize, QTimer
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QMouseEvent, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -68,6 +68,7 @@ class ListView(BaseImageView):
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
         self._list.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_icons())
         self._list.installEventFilter(self)
+        self._list.viewport().installEventFilter(self)
 
         self._list_layout_timer = QTimer(self)
         self._list_layout_timer.setSingleShot(True)
@@ -75,6 +76,7 @@ class ListView(BaseImageView):
 
         self._list_drag_press_pos: QPoint | None = None
         self._list_drag_anchor: QListWidgetItem | None = None
+        self._suppress_list_vp_drag_select = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -198,22 +200,70 @@ class ListView(BaseImageView):
                 return pm
         return None
 
+    def _finish_list_external_drag_gesture(self) -> None:
+        self._list_drag_press_pos = None
+        self._list_drag_anchor = None
+        self._suppress_list_vp_drag_select = False
+        self._list.setState(QAbstractItemView.State.NoState)
+        QTimer.singleShot(0, self._deferred_reset_list_view_state)
+
+    def _deferred_reset_list_view_state(self) -> None:
+        self._list.setState(QAbstractItemView.State.NoState)
+
     def eventFilter(self, obj, event) -> bool:
         if obj is self._list:
             et = event.type()
+            if et == QEvent.Type.KeyPress:
+                ke = event
+                if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Space:
+                        sel = self.selected_paths()
+                        if sel:
+                            self.fullscreen_requested.emit(sel[-1])
+                        return True
+                    if ke.key() == Qt.Key.Key_Delete:
+                        sel = self.selected_paths()
+                        if sel:
+                            self.delete_requested.emit(sel)
+                        return True
+                return False
+            if et == QEvent.Type.Resize:
+                self._schedule_list_layout_sync()
+            return super().eventFilter(obj, event)
+
+        if obj is self._list.viewport():
+            et = event.type()
+            if et == QEvent.Type.KeyPress:
+                ke = event
+                if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Space:
+                        sel = self.selected_paths()
+                        if sel:
+                            self.fullscreen_requested.emit(sel[-1])
+                        return True
+                    if ke.key() == Qt.Key.Key_Delete:
+                        sel = self.selected_paths()
+                        if sel:
+                            self.delete_requested.emit(sel)
+                        return True
+                return False
             if et == QEvent.Type.MouseButtonPress:
                 me = event
                 if isinstance(me, QMouseEvent) and me.button() == Qt.MouseButton.LeftButton:
                     self._list_drag_anchor = self._list.itemAt(me.pos())
                     self._list_drag_press_pos = me.pos() if self._list_drag_anchor else None
+                    self._suppress_list_vp_drag_select = self._list_drag_anchor is not None
                 else:
                     self._list_drag_press_pos = None
                     self._list_drag_anchor = None
-            elif et == QEvent.Type.MouseMove:
+                    self._suppress_list_vp_drag_select = False
+                return False
+            if et == QEvent.Type.MouseMove:
                 me = event
+                if not isinstance(me, QMouseEvent):
+                    return super().eventFilter(obj, event)
                 if (
-                    isinstance(me, QMouseEvent)
-                    and self._list_drag_press_pos is not None
+                    self._list_drag_press_pos is not None
                     and self._list_drag_anchor is not None
                     and (me.buttons() & Qt.MouseButton.LeftButton)
                     and (me.pos() - self._list_drag_press_pos).manhattanLength()
@@ -223,26 +273,18 @@ class ListView(BaseImageView):
                     preview = self._list_drag_preview(self._list_drag_anchor)
                     if paths:
                         exec_external_file_drag(self._list, paths, preview)
-                    self._list_drag_press_pos = None
-                    self._list_drag_anchor = None
-            elif et == QEvent.Type.MouseButtonRelease:
-                self._list_drag_press_pos = None
-                self._list_drag_anchor = None
-            elif et == QEvent.Type.KeyPress:
-                key = event.key()
-                if key == Qt.Key.Key_Space:
-                    sel = self.selected_paths()
-                    if sel:
-                        self.fullscreen_requested.emit(sel[-1])
-                    return True
-                if key == Qt.Key.Key_Delete:
-                    sel = self.selected_paths()
-                    if sel:
-                        self.delete_requested.emit(sel)
+                    self._finish_list_external_drag_gesture()
+                    return False
+                if self._suppress_list_vp_drag_select and (me.buttons() & Qt.MouseButton.LeftButton):
                     return True
                 return False
-            elif et == QEvent.Type.Resize:
-                self._schedule_list_layout_sync()
+            if et == QEvent.Type.MouseButtonRelease:
+                self._list_drag_press_pos = None
+                self._list_drag_anchor = None
+                self._suppress_list_vp_drag_select = False
+                return False
+            return super().eventFilter(obj, event)
+
         return super().eventFilter(obj, event)
 
     def _on_selection_changed(self) -> None:

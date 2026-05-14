@@ -25,11 +25,12 @@ from app.ui.sort_control import SortControlBar
 from app.views.base_view import BaseImageView
 from app.views.filmstrip_view import FilmstripView
 from app.views.justified_view import JustifiedView
+from app.views.essential_view import EssentialView
 from app.views.list_view import ListView
 from app.views.masonry_view import MasonryView
 from app.views.square_view import SquareGridView
 
-_MODE_ORDER = ("masonry", "justified", "square", "filmstrip", "list")
+_MODE_ORDER = ("essential", "masonry", "justified", "square", "filmstrip", "list")
 
 _PREVIEW_FAV_TAB_QSS = """
 QTabBar#preview_fav_tab_bar {
@@ -91,6 +92,7 @@ class PreviewPanel(QWidget):
         self._tile_bg = True
 
         self._view_types: dict[str, type[BaseImageView]] = {
+            "essential": EssentialView,
             "masonry": MasonryView,
             "justified": JustifiedView,
             "square": SquareGridView,
