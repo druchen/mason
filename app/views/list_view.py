@@ -9,41 +9,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, Qt, QEvent, QSize, QTimer
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
+from PySide6.QtGui import QColor, QBrush, QFontMetrics, QIcon, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QListWidget,
     QListWidgetItem,
-    QStyledItemDelegate,
-    QStyle,
-    QStyleOptionViewItem,
+    QSizePolicy,
     QVBoxLayout,
 )
 
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+from app.views.selection_overlay import NoFillSelectionDelegate
 
 # Left inset for each row (stylesheet padding-left; shifts icon + text together).
 _LIST_VIEWPORT_LEFT_MARGIN = 12
 _LIST_ICON_TEXT_GAP = 14
-
-
-class _ListRowDelegate(QStyledItemDelegate):
-    """Strip inner focus ring / nested text highlight so selection reads as one blue outline."""
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
-        opt = QStyleOptionViewItem(option)
-        self.initStyleOption(opt, index)
-        opt.state &= ~QStyle.StateFlag.State_HasFocus
-        if opt.state & QStyle.StateFlag.State_Selected:
-            opt.palette.setColor(QPalette.ColorRole.Highlight, QColor(90, 180, 245, 51))
-            opt.palette.setColor(
-                QPalette.ColorRole.HighlightedText,
-                opt.palette.color(QPalette.ColorRole.Text),
-            )
-        super().paint(painter, opt, index)
 
 
 class ListView(BaseImageView):
@@ -69,6 +52,7 @@ class ListView(BaseImageView):
         self._list.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_icons())
         self._list.installEventFilter(self)
         self._list.viewport().installEventFilter(self)
+        self._list.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         self._list_layout_timer = QTimer(self)
         self._list_layout_timer.setSingleShot(True)
@@ -81,7 +65,8 @@ class ListView(BaseImageView):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._list)
-        self._list.setItemDelegate(_ListRowDelegate(self._list))
+        self._list.setItemDelegate(NoFillSelectionDelegate(self._list))
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self._apply_styles()
 
     def _list_icon_pixel_size(self) -> int:
@@ -377,7 +362,11 @@ class ListView(BaseImageView):
         m = int(_LIST_VIEWPORT_LEFT_MARGIN)
         self._list.setStyleSheet(
             f"""
-            QListWidget {{ background: transparent; }}
+            QListWidget {{
+                background: transparent;
+                selection-background-color: transparent;
+                show-decoration-selected: 0;
+            }}
             QListWidget::item {{
                 background: #3c3c3c;
                 border: 2px solid transparent;
@@ -388,13 +377,16 @@ class ListView(BaseImageView):
                 padding-right: 2px;
                 padding-left: {m}px;
             }}
-            QListWidget::item:selected {{
-                background: rgba(90, 180, 245, 0.2);
-                border: 2px solid #5ab4f5;
-                outline: none;
-            }}
             """
         )
+        pal = self._list.palette()
+        for grp in (
+            QPalette.ColorGroup.Active,
+            QPalette.ColorGroup.Inactive,
+            QPalette.ColorGroup.Disabled,
+        ):
+            pal.setBrush(grp, QPalette.ColorRole.Highlight, QBrush(Qt.GlobalColor.transparent))
+        self._list.setPalette(pal)
 
     def selected_path(self) -> str | None:
         return self._selected_path

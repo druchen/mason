@@ -24,21 +24,18 @@ from app.ui.mason_tab_widget import TabBarGapDividerLine
 from app.ui.sort_control import SortControlBar
 from app.views.base_view import BaseImageView
 from app.views.filmstrip_view import FilmstripView
-from app.views.justified_view import JustifiedView
 from app.views.essential_view import EssentialView
 from app.views.list_view import ListView
-from app.views.masonry_view import MasonryView
-from app.views.square_view import SquareGridView
 
-_MODE_ORDER = ("essential", "masonry", "justified", "square", "filmstrip", "list")
+_MODE_ORDER = ("essential", "filmstrip", "list")
 
 _PREVIEW_FAV_TAB_QSS = """
 QTabBar#preview_fav_tab_bar {
     background: transparent;
 }
 QTabBar#preview_fav_tab_bar::tab {
-    min-width: 180px;
-    max-width: 180px;
+    min-width: 72px;
+    max-width: 220px;
     min-height: 22px;
     padding: 4px 8px 4px 14px;
     margin-right: 2px;
@@ -93,9 +90,6 @@ class PreviewPanel(QWidget):
 
         self._view_types: dict[str, type[BaseImageView]] = {
             "essential": EssentialView,
-            "masonry": MasonryView,
-            "justified": JustifiedView,
-            "square": SquareGridView,
             "filmstrip": FilmstripView,
             "list": ListView,
         }
@@ -109,6 +103,7 @@ class PreviewPanel(QWidget):
         self._fav_tabs.setUsesScrollButtons(True)
         self._fav_tabs.setDrawBase(False)
         self._fav_tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self._fav_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._fav_tabs.currentChanged.connect(self._on_fav_tab_changed)
         self._fav_tabs.tabMoved.connect(self._on_fav_tabs_moved)
 
@@ -134,7 +129,7 @@ class PreviewPanel(QWidget):
         lay.addSpacing(8)
         lay.addWidget(self._stack, stretch=1)
 
-        self._mode = "square"
+        self._mode = "essential"
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAcceptDrops(True)
@@ -315,7 +310,7 @@ class PreviewPanel(QWidget):
         existing = self._views.get(mode)
         if existing is not None:
             return existing
-        cls = self._view_types.get(mode, SquareGridView)
+        cls = self._view_types.get(mode, EssentialView)
         view = cls(self._cache)
         self._wire_view(view)
         self._views[mode] = view

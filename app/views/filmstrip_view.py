@@ -9,13 +9,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QEvent, QRect, QSize, Qt, QTimer, Signal, QItemSelectionModel
-from PySide6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent, QPixmap, QIcon
+from PySide6.QtGui import QBrush, QContextMenuEvent, QKeyEvent, QMouseEvent, QPalette, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QListView,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QSplitter,
     QLabel,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+from app.views.selection_overlay import NoFillSelectionDelegate
 from app.views.letterbox_icons import (
     PREVIEW_SURFACE,
     fit_pixmap_letterbox_square,
@@ -172,6 +174,8 @@ class FilmstripView(BaseImageView):
         self._strip_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._strip_list.installEventFilter(self)
         self._strip_list.thumb_double_clicked.connect(self._on_strip_thumb_double_click)
+        self._strip_list.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._strip_list.setItemDelegate(NoFillSelectionDelegate(self._strip_list))
 
         self._apply_strip_style()
         self._strip_list.horizontalScrollBar().valueChanged.connect(self._on_strip_scroll)
@@ -186,6 +190,7 @@ class FilmstripView(BaseImageView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(split)
 
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._split = split
 
@@ -210,16 +215,13 @@ class FilmstripView(BaseImageView):
                 background-color: {PREVIEW_SURFACE};
                 border: none;
                 outline: none;
+                selection-background-color: transparent;
+                show-decoration-selected: 0;
             }}
             QListWidget#filmstripStripList::item {{
                 background: transparent;
                 border: 2px solid transparent;
                 border-radius: 2px;
-                outline: none;
-            }}
-            QListWidget#filmstripStripList::item:selected {{
-                background: rgba(90, 180, 245, 0.15);
-                border: 2px solid #5ab4f5;
                 outline: none;
             }}
             QListWidget#filmstripStripList QScrollBar:horizontal {{
@@ -250,6 +252,14 @@ class FilmstripView(BaseImageView):
             }}
             """
         )
+        pal = self._strip_list.palette()
+        for grp in (
+            QPalette.ColorGroup.Active,
+            QPalette.ColorGroup.Inactive,
+            QPalette.ColorGroup.Disabled,
+        ):
+            pal.setBrush(grp, QPalette.ColorRole.Highlight, QBrush(Qt.GlobalColor.transparent))
+        self._strip_list.setPalette(pal)
 
     def _reserved_strip_overhead_vertical(self) -> int:
         return 2 * _STRIP_MARGIN + _ITEM_CHROME

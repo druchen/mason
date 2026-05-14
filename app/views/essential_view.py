@@ -1,22 +1,21 @@
 """Essential layout: letterboxed thumbnails in a QListWidget (Icon mode).
 
-Column count (4–16) follows the global thumbnail slider (48–512). Tile pixel size comes
-from the viewport width. Spacing between cells is fixed; leftover width is split evenly
-via viewport margins so rows stay visually centered.
+Column count (4–16) follows the global thumbnail slider (48–512). Grid metrics are derived
+from the list viewport width; leftover width is split evenly as left/right viewport margins.
 """
-
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal, QSize
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QIcon
+from PySide6.QtGui import QBrush, QKeyEvent, QMouseEvent, QPalette, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
     QListView,
     QListWidget,
     QListWidgetItem,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+from app.views.selection_overlay import NoFillSelectionDelegate
 from app.views.letterbox_icons import (
     PREVIEW_SURFACE,
     fit_pixmap_letterbox_square,
@@ -31,7 +31,7 @@ from app.views.letterbox_icons import (
 )
 
 _GAP = 8
-_MARGIN = 8
+_VIEWPORT_VPAD = 8  # top/bottom only; horizontal inset is ml/mr from tile math
 _ITEM_CHROME = 12
 _SLIDER_LO = 48
 _SLIDER_HI = 512
@@ -56,7 +56,9 @@ class EssentialView(BaseImageView):
         self._list.setMovement(QListWidget.Movement.Static)
         self._list.setFlow(QListView.Flow.LeftToRight)
         self._list.setWrapping(True)
-        self._list.setResizeMode(QListView.ResizeMode.Adjust)
+        # Fixed: we own grid metrics in _flush_icon_layout. "Adjust" lets Qt relayout the
+        # icon grid independently, which fights viewport margins and leaves a wide gap on the right.
+        self._list.setResizeMode(QListView.ResizeMode.Fixed)
         self._list.setSpacing(_GAP)
         self._list.setUniformItemSizes(True)
         self._list.setItemAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -68,6 +70,8 @@ class EssentialView(BaseImageView):
         self._list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._list.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self._list.setItemDelegate(NoFillSelectionDelegate(self._list))
 
         self._list.customContextMenuRequested.connect(self._on_context_menu)
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -89,6 +93,7 @@ class EssentialView(BaseImageView):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._list)
 
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self._apply_list_style()
 
     def _columns_per_row(self) -> int:
@@ -98,26 +103,18 @@ class EssentialView(BaseImageView):
         idx = min(steps, max(0, (t - _SLIDER_LO) * steps // span))
         return _COLS_WHEN_SLIDER_MIN - idx
 
-    def _hint_viewport_width(self) -> int:
-        vw = int(self._list.viewport().width())
-        if vw < 16:
-            vw = max(0, self._list.width() - self._list.verticalScrollBar().sizeHint().width())
-        return max(120, vw)
-
-    def _compute_tile_metrics(self) -> tuple[int, int, int, int, int]:
-        """ncol, outer, cell, margin_left, margin_right."""
-        vp_w = self._hint_viewport_width()
+    def _compute_tile_metrics(self, vp_w: int) -> tuple[int, int, int, int, int]:
+        """Return ncol, outer, cell, margin_left, margin_right for viewport width ``vp_w``."""
         ncol = self._columns_per_row()
-        inner = vp_w - 2 * _MARGIN
-        if inner <= 0 or ncol < 1:
-            return ncol, 1, 1, _MARGIN, _MARGIN
-        outer_raw = (inner - (ncol - 1) * _GAP) // ncol
-        outer = max(_ITEM_CHROME + 1, outer_raw)
-        cell = max(1, outer - _ITEM_CHROME)
+        vp_w = max(40, int(vp_w))
+        if ncol < 1:
+            return 4, 1, 1, 0, 0
+        outer = (vp_w - (ncol - 1) * _GAP) // ncol
+        outer = max(_ITEM_CHROME + 1, outer)
         used = ncol * outer + (ncol - 1) * _GAP
-        slack = max(0, inner - used)
-        ml = _MARGIN + slack // 2
-        mr = _MARGIN + slack - slack // 2
+        slack = max(0, vp_w - used)
+        ml, mr = slack // 2, slack - slack // 2
+        cell = max(1, outer - _ITEM_CHROME)
         return ncol, outer, cell, ml, mr
 
     def _apply_list_style(self) -> None:
@@ -127,16 +124,13 @@ class EssentialView(BaseImageView):
                 background-color: {PREVIEW_SURFACE};
                 border: none;
                 outline: none;
+                selection-background-color: transparent;
+                show-decoration-selected: 0;
             }}
             QListWidget#essentialPreviewList::item {{
                 background: transparent;
                 border: 2px solid transparent;
                 border-radius: 2px;
-                outline: none;
-            }}
-            QListWidget#essentialPreviewList::item:selected {{
-                background: rgba(90, 180, 245, 0.15);
-                border: 2px solid #5ab4f5;
                 outline: none;
             }}
             QListWidget#essentialPreviewList QScrollBar:vertical {{
@@ -167,20 +161,38 @@ class EssentialView(BaseImageView):
             }}
             """
         )
+        pal = self._list.palette()
+        for grp in (
+            QPalette.ColorGroup.Active,
+            QPalette.ColorGroup.Inactive,
+            QPalette.ColorGroup.Disabled,
+        ):
+            pal.setBrush(grp, QPalette.ColorRole.Highlight, QBrush(Qt.GlobalColor.transparent))
+        self._list.setPalette(pal)
 
     def _schedule_layout(self) -> None:
         self._layout_timer.start(50)
 
     def _flush_icon_layout(self) -> None:
         self._layout_timer.stop()
-        ncol, outer, cell, ml, mr = self._compute_tile_metrics()
+
+        def _apply(vp_w: int) -> tuple[int, int, int, int, int]:
+            ncol, outer, cell, ml, mr = self._compute_tile_metrics(vp_w)
+            self._list.setViewportMargins(ml, _VIEWPORT_VPAD, mr, _VIEWPORT_VPAD)
+            self._list.setGridSize(QSize(outer, outer))
+            self._list.setIconSize(QSize(cell, cell))
+            return ncol, outer, cell, ml, mr
+
+        # One reflow pass; a second pass only if viewport width changed (e.g. scrollbar appeared).
+        vp0 = max(120, int(self._list.viewport().width()))
+        ncol, outer, cell, ml, mr = _apply(vp0)
+        vp1 = max(120, int(self._list.viewport().width()))
+        if vp1 != vp0:
+            ncol, outer, cell, ml, mr = _apply(vp1)
+
         self._ncol = ncol
         self._outer_px = outer
         self._cell_px = cell
-
-        self._list.setViewportMargins(ml, _MARGIN, mr, _MARGIN)
-        self._list.setGridSize(QSize(outer, outer))
-        self._list.setIconSize(QSize(cell, cell))
 
         hint = QSize(outer, outer)
         for i in range(self._list.count()):

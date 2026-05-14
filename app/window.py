@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):
         self._fullscreen_view = None
         self._photoshop_exe = str(self._settings.get("photoshop_exe") or "")
         self._locked_mode = os.environ.get("MASON_LOCK_PREVIEW_MODE", "").strip().lower() or None
+        if self._locked_mode and self._locked_mode not in settings_mod.KNOWN_LAYOUT_MODES:
+            self._locked_mode = None
         self._pending_thumb_size: int | None = None
         self._thumb_size_timer = QTimer(self)
         self._thumb_size_timer.setSingleShot(True)
@@ -81,7 +83,7 @@ class MainWindow(QMainWindow):
         self._folder_panel.set_favorites(fav_list)
         self._preview.set_favorites_tabs(self._folder_panel.favorites_for_settings())
 
-        start_mode = str(self._settings.get("layout_mode") or "square")
+        start_mode = str(self._settings.get("layout_mode") or "essential")
         if self._locked_mode:
             start_mode = self._locked_mode
         self._splitters_layout_mode = start_mode
@@ -270,21 +272,32 @@ class MainWindow(QMainWindow):
                 restored = self._try_restore_splitters_from_qt_state(entry)
 
             if not restored and sm is not None and sl is not None and sr is not None:
-                main_fit = self._fit_splitter_sizes(sm, total_w, floor_each=120)
-                left_fit = self._fit_splitter_sizes(sl, total_h_l, floor_each=80)
-                right_fit = self._fit_splitter_sizes(sr, total_h_r, floor_each=80)
+                main_fit = self._fit_splitter_sizes(sm, total_w, floor_each=48)
+                left_fit = self._fit_splitter_sizes(sl, total_h_l, floor_each=64)
+                right_fit = self._fit_splitter_sizes(sr, total_h_r, floor_each=64)
                 self._split_main.setSizes(main_fit)
                 self._split_left.setSizes(left_fit)
                 self._split_right.setSizes(right_fit)
             elif not restored:
-                left_w = max(200, int(total_w * 0.18))
-                right_w = max(220, int(total_w * 0.20))
-                self._split_main.setSizes([left_w, max(200, total_w - left_w - right_w), right_w])
+                min_side = 72
+                min_mid = 80
+                left_w = max(min_side, int(total_w * 0.17))
+                right_w = max(min_side, int(total_w * 0.19))
+                mid = total_w - left_w - right_w
+                if mid < min_mid:
+                    deficit = min_mid - mid
+                    dl = min(deficit // 2 + deficit % 2, max(0, left_w - 48))
+                    left_w -= dl
+                    deficit -= dl
+                    dr = min(deficit, max(0, right_w - 48))
+                    right_w -= dr
+                    mid = total_w - left_w - right_w
+                self._split_main.setSizes([left_w, max(48, mid), right_w])
                 self._split_left.setSizes(
-                    [max(300, int(total_h_l * 0.65)), max(120, int(total_h_l * 0.35))]
+                    [max(120, int(total_h_l * 0.62)), max(80, int(total_h_l * 0.38))]
                 )
                 self._split_right.setSizes(
-                    [max(200, int(total_h_r * 0.55)), max(120, int(total_h_r * 0.45))]
+                    [max(100, int(total_h_r * 0.55)), max(72, int(total_h_r * 0.45))]
                 )
         finally:
             for sp in splitters:
@@ -312,6 +325,7 @@ class MainWindow(QMainWindow):
         center_col.addWidget(self._info)
 
         self._split_main = QSplitter(Qt.Orientation.Horizontal)
+        self._split_main.setChildrenCollapsible(True)
         self._split_left = QSplitter(Qt.Orientation.Vertical)
         self._split_right = QSplitter(Qt.Orientation.Vertical)
 

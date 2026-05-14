@@ -44,7 +44,7 @@ class MainToolbar(QFrame):
     search_changed = Signal(str)
     settings_clicked = Signal()
 
-    MODES = ["essential", "masonry", "justified", "square", "filmstrip", "list"]
+    MODES = ["essential", "filmstrip", "list"]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -144,7 +144,7 @@ class MainToolbar(QFrame):
         lay.addWidget(right, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self._sync_search_height()
-        self.set_mode("square")
+        self.set_mode("essential")
 
     def _sync_search_height(self) -> None:
         fm = QFontMetrics(self.font())
@@ -174,4 +174,4 @@ class MainToolbar(QFrame):
         for m, btn in self._buttons.items():
             if btn.isChecked():
                 return m
-        return "square"
+        return "essential"

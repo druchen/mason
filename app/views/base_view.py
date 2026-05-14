@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class BaseImageView(QWidget):
-    """Common interface for masonry, grid, filmstrip, list, etc."""
+    """Common interface for preview layout views (essential, filmstrip, list, etc.)."""
 
     selection_changed = Signal(str)
     fullscreen_requested = Signal(str)

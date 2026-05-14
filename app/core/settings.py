@@ -29,7 +29,7 @@ def settings_path() -> Path:
 DEFAULT_SETTINGS: dict[str, Any] = {
     "last_folder": "",
     "thumbnail_size": 128,
-    "layout_mode": "square",
+    "layout_mode": "essential",
     "sort_by": "name",
     "sort_ascending": True,
     "tile_background": True,
@@ -44,7 +44,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 # Must match app.ui.toolbar.MainToolbar.MODES (avoid importing Qt from here).
-KNOWN_LAYOUT_MODES: tuple[str, ...] = ("essential", "masonry", "justified", "square", "filmstrip", "list")
+KNOWN_LAYOUT_MODES: tuple[str, ...] = ("essential", "filmstrip", "list")
 
 
 def _validate_splitter_list(raw: Any, expected_len: int) -> list[int] | None:
@@ -135,6 +135,13 @@ def _sanitize_settings(data: dict[str, Any]) -> dict[str, Any]:
             if m not in sbm:
                 sbm[m] = {k: list(v) for k, v in seed.items()}
     out["splitters_by_mode"] = sbm
+
+    valid_modes = set(KNOWN_LAYOUT_MODES)
+    lm_mode = str(out.get("layout_mode", DEFAULT_SETTINGS["layout_mode"])).strip().lower()
+    if lm_mode not in valid_modes:
+        out["layout_mode"] = str(DEFAULT_SETTINGS["layout_mode"])
+    else:
+        out["layout_mode"] = lm_mode
 
     return out
 
