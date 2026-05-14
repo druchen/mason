@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from app.core import file_scanner
 from app.core.thumbnail_cache import ThumbnailCache
 from app.ui.drop_import import normalize_drop_format
+from app.ui.image_actions import locate_folder_in_explorer
 
 
 class SettingsDialog(QDialog):
@@ -117,6 +118,9 @@ class SettingsDialog(QDialog):
         self._gen_thumbs_btn = QPushButton("Generate thumbnails for current folder")
         self._gen_thumbs_btn.clicked.connect(self._on_generate_thumbnails)
         gen_row.addWidget(self._gen_thumbs_btn)
+        self._open_thumb_dir_btn = QPushButton("Open Thumbnail Folder")
+        self._open_thumb_dir_btn.clicked.connect(self._on_open_thumbnail_folder)
+        gen_row.addWidget(self._open_thumb_dir_btn)
         gen_row.addStretch(1)
         thumbs_lay.addLayout(gen_row)
 
@@ -137,6 +141,7 @@ class SettingsDialog(QDialog):
 
         enable_thumb_actions = self._thumb_cache is not None
         self._gen_thumbs_btn.setEnabled(enable_thumb_actions)
+        self._open_thumb_dir_btn.setEnabled(enable_thumb_actions)
         self._purge_thumbs_btn.setEnabled(enable_thumb_actions)
 
         root.addStretch(1)
@@ -196,6 +201,13 @@ class SettingsDialog(QDialog):
             f"Queued {len(paths)} images for 512px and 1024px previews. "
             "Generation runs in the background.",
         )
+
+    def _on_open_thumbnail_folder(self) -> None:
+        if self._thumb_cache is None:
+            return
+        err = locate_folder_in_explorer(str(self._thumb_cache.cache_directory()))
+        if err:
+            QMessageBox.warning(self, "Thumbnails", err)
 
     def _on_purge_thumbnails(self) -> None:
         if self._thumb_cache is None:

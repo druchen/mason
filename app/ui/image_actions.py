@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from PySide6.QtGui import QClipboard, QImage, QPixmap
@@ -40,6 +41,28 @@ def locate_file_in_explorer(image_path: str) -> str | None:
     norm = os.path.normpath(str(p.resolve()))
     try:
         subprocess.run(["explorer", "/select,", norm], check=False)  # noqa: S603
+    except OSError as e:
+        return str(e)
+    return None
+
+
+def locate_folder_in_explorer(folder_path: str) -> str | None:
+    """Open a folder in the system file manager. Returns error message or None."""
+    p = Path(folder_path)
+    try:
+        resolved = p.resolve()
+    except OSError:
+        return "That path is not valid."
+    if not resolved.is_dir():
+        return "That folder does not exist."
+    norm = str(resolved)
+    try:
+        if os.name == "nt":
+            os.startfile(norm)  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.run(["open", norm], check=False)  # noqa: S603
+        else:
+            subprocess.run(["xdg-open", norm], check=False)  # noqa: S603
     except OSError as e:
         return str(e)
     return None

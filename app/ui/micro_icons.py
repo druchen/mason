@@ -83,33 +83,52 @@ def gear_icon() -> QIcon:
 
 
 def tag_icon_pm(d: int = 16) -> QPixmap:
-    """Small price-tag outline (line art, matches other panel icons)."""
+    """Solid price-tag silhouette with a punched hole (Tagging Mode; scales with *d*)."""
+    d = max(12, int(d))
+    w = float(d)
     pm = QPixmap(d, d)
     pm.fill(Qt.GlobalColor.transparent)
+
+    m = max(1.0, w * 0.11)
+    rx = w * 0.21
+    ry = m
+    rw = w * 0.58
+    rh = w * 0.40
+    rr = min(w * 0.055, rw * 0.25, rh * 0.35)
+
+    top = QPainterPath()
+    top.addRoundedRect(QRectF(rx, ry, rw, rh), rr, rr)
+
+    y_join = ry + rh - m * 0.12
+    point = QPainterPath()
+    point.moveTo(rx, y_join)
+    point.lineTo(rx + rw, y_join)
+    point.lineTo(w * 0.5, w - m * 0.32)
+    point.closeSubpath()
+
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(160, 160, 160))
-    pen.setWidthF(1.65)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    hole = QRectF(4.2, 3.2, 2.8, 2.8)
-    p.drawEllipse(hole)
-    path = QPainterPath()
-    path.moveTo(6.8, 5.2)
-    path.lineTo(12.5, 3.0)
-    path.lineTo(13.2, 5.2)
-    path.lineTo(7.2, 13.2)
-    path.lineTo(4.2, 12.2)
-    path.closeSubpath()
-    p.drawPath(path)
+    p.setPen(Qt.NoPen)
+    fill = QColor(228, 228, 228)
+    p.fillPath(top, fill)
+    p.fillPath(point, fill)
+
+    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
+    p.setBrush(QColor(255, 255, 255))
+    hr = w * 0.09
+    hcx = w * 0.5
+    hcy = ry + rh * 0.30
+    p.drawEllipse(QRectF(hcx - hr, hcy - hr, 2 * hr, 2 * hr))
     p.end()
     return pm
 
 
 def tag_icon() -> QIcon:
-    return QIcon(tag_icon_pm(16))
+    """Tagging Mode: 16px + 32px pixmap variants for sharp display on hidpi."""
+    ic = QIcon()
+    ic.addPixmap(tag_icon_pm(16))
+    ic.addPixmap(tag_icon_pm(32))
+    return ic
 
 
 def no_sign_pm(d: int = 14) -> QPixmap:

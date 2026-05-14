@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.context_menus import style_context_menu
 from app.ui.mason_tab_widget import MasonTabWidget
 
 _PATH_FRAME_BORDER = "#383838"
@@ -155,6 +156,7 @@ class FolderPanel(QWidget):
         if not n:
             return
         menu = QMenu(self)
+        style_context_menu(menu)
         add = menu.addAction("Add to Favorite")
         add.setEnabled(n not in self._favorite_path_set())
         act = menu.exec(self._tree.viewport().mapToGlobal(pos))
@@ -233,6 +235,7 @@ class FolderPanel(QWidget):
         if not isinstance(path, str):
             return
         menu = QMenu(self)
+        style_context_menu(menu)
         ren = menu.addAction("Rename")
         rem = menu.addAction("Remove from Favorite")
         act = menu.exec(self._fav_list.viewport().mapToGlobal(pos))

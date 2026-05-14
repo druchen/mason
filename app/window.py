@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from PySide6.QtCore import QByteArray, QPoint, QMimeData, Qt, QTimer
+from PySide6.QtCore import QByteArray, QPoint, QMimeData, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from app.core import file_scanner, settings as settings_mod, sort_filter
 from app.core.tags_store import TagsStore
 from app.core.thumbnail_cache import ThumbnailCache
+from app.ui.context_menus import style_context_menu
 from app.ui.filter_panel import FilterPanel
 from app.ui.folder_panel import FolderPanel
 from app.ui.info_bar import InfoBar
@@ -31,6 +32,27 @@ from app.ui.preview_panel import PreviewPanel
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.toolbar import MainToolbar
 from app.ui import drop_import, image_actions
+
+
+class _EmbeddedTagScanThread(QThread):
+    """Scans image files for embedded keywords without touching ``TagsStore`` (thread-safe)."""
+
+    scanned = Signal(list)
+
+    def __init__(self, paths: list[str]) -> None:
+        super().__init__()
+        self._paths = paths
+
+    def run(self) -> None:  # type: ignore[override]
+        from app.core.tags_importer import scan_paths_for_embedded_tags
+
+        if self.isInterruptionRequested():
+            return
+        pairs = scan_paths_for_embedded_tags(
+            self._paths, should_abort=lambda: self.isInterruptionRequested()
+        )
+        if not self.isInterruptionRequested():
+            self.scanned.emit(pairs)
 
 
 class MainWindow(QMainWindow):
@@ -63,6 +85,8 @@ class MainWindow(QMainWindow):
         if self._locked_mode and self._locked_mode not in settings_mod.KNOWN_LAYOUT_MODES:
             self._locked_mode = None
         self._pending_thumb_size: int | None = None
+        self._tag_import_thread: QThread | None = None
+        self._tag_import_generation = 0
         self._thumb_size_timer = QTimer(self)
         self._thumb_size_timer.setSingleShot(True)
         self._thumb_size_timer.timeout.connect(self._apply_pending_thumb_size)
@@ -492,8 +516,6 @@ class MainWindow(QMainWindow):
         return None
 
     def _handle_preview_import_drop(self, mime: QMimeData) -> None:
-        from app.core.tags_importer import import_tags_from_folder
-
         saved = drop_import.import_from_mime_data(
             self,
             Path(self._folder),
@@ -503,7 +525,7 @@ class MainWindow(QMainWindow):
         if not saved:
             return
         self._raw_paths = file_scanner.scan_folder(self._folder)
-        import_tags_from_folder(self._raw_paths, self._store)
+        self._start_embedded_tag_import(list(self._raw_paths))
         self._refresh_paths()
         last = saved[-1]
         pick = self._path_matches_visible(last, self._visible_paths())
@@ -543,13 +565,51 @@ class MainWindow(QMainWindow):
         self._preview.sync_favorite_tab_for_path(self._folder)
 
     def _load_folder(self, folder: str) -> None:
-        from app.core.tags_importer import import_tags_from_folder
         self._raw_paths = file_scanner.scan_folder(folder)
-        import_tags_from_folder(self._raw_paths, self._store)
         self._selected_image = None
         self._metadata.clear()
         self._sync_tags_selection()
         self._refresh_paths()
+        self._start_embedded_tag_import(list(self._raw_paths))
+
+    def _start_embedded_tag_import(self, paths: list[str]) -> None:
+        """Merge embedded file keywords into SQLite without blocking the UI thread."""
+        self._tag_import_generation += 1
+        gen = self._tag_import_generation
+        old = self._tag_import_thread
+        if old is not None:
+            old.requestInterruption()
+            try:
+                old.scanned.disconnect()
+            except TypeError:
+                pass
+            old.wait(8000)
+            old.deleteLater()
+            self._tag_import_thread = None
+        th = _EmbeddedTagScanThread(paths)
+        self._tag_import_thread = th
+        th.scanned.connect(lambda pairs, g=gen: self._on_embedded_tag_scan_finished(pairs, g))
+        th.finished.connect(self._on_embedded_tag_thread_finished)
+        th.start()
+
+    def _on_embedded_tag_thread_finished(self) -> None:
+        th = self.sender()
+        if th is self._tag_import_thread:
+            self._tag_import_thread = None
+
+    def _on_embedded_tag_scan_finished(self, pairs: object, generation: int) -> None:
+        if generation != self._tag_import_generation:
+            return
+        if not isinstance(pairs, list):
+            return
+        from app.core.tags_importer import apply_embedded_tags_to_store
+
+        apply_embedded_tags_to_store(self._store, cast(list[tuple[str, list[str]]], pairs))
+        self._filter.reload_tags()
+        self._tags.reload_tree_from_store()
+        self._refresh_paths()
+        if self._selected_image:
+            self._metadata.show_path(self._selected_image)
 
     def _refresh_paths(self) -> None:
         """Re-sort/filter the current folder, preserving the current image selection."""
@@ -636,22 +696,31 @@ class MainWindow(QMainWindow):
         if not path or not Path(path).is_file():
             return
         menu = QMenu(self)
-        menu.addAction("Open in Photoshop", lambda: self._open_in_photoshop(path))
-        menu.addAction("Locate file", lambda: self._locate_file(path))
-        menu.addAction("Copy image", lambda: self._copy_image(path))
+        style_context_menu(menu)
+        menu.addAction("Copy Image", lambda: self._copy_image(path))
+        menu.addAction("Locate File", lambda: self._locate_file(path))
+        menu.addAction("Open In Photoshop", lambda: self._open_in_photoshop(path))
+        menu.addAction("Clear Tags", lambda: self._clear_tags_for_image(path))
         menu.addAction("Rename…", lambda: self._rename_file(path))
         menu.addAction("Delete…", lambda: self._delete_files([path]))
         menu.exec(global_pos)
 
+    def _clear_tags_for_image(self, path: str) -> None:
+        self._store.clear_tags_for_image(path)
+        self._on_tags_changed()
+        self._tags.sync_checks_from_store()
+        if self._selected_image:
+            self._metadata.show_path(self._selected_image)
+
     def _locate_file(self, path: str) -> None:
         err = image_actions.locate_file_in_explorer(path)
         if err:
-            QMessageBox.warning(self, "Locate file", err)
+            QMessageBox.warning(self, "Locate File", err)
 
     def _copy_image(self, path: str) -> None:
         err = image_actions.copy_image_to_clipboard(path)
         if err:
-            QMessageBox.warning(self, "Copy image", err)
+            QMessageBox.warning(self, "Copy Image", err)
 
     def _rename_file(self, path: str) -> None:
         old = Path(path)
@@ -797,6 +866,11 @@ class MainWindow(QMainWindow):
         self._refresh_paths()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._tag_import_generation += 1
+        t = self._tag_import_thread
+        if t is not None:
+            t.requestInterruption()
+            t.wait(3000)
         self._save_settings()
         self._thumb_cache.clear_pending()
         from PySide6.QtCore import QThreadPool

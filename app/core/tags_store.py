@@ -1,7 +1,8 @@
 """SQLite-backed tag storage.
 
 After every assign or remove the full tag list for that image is written into
-the image's IPTC metadata (JPEG only) so tags are visible to Bridge/Lightroom.
+embedded metadata where supported (JPEG IPTC, WebP EXIF keywords) so tags
+can surface in Explorer, Bridge, Lightroom, and similar tools.
 """
 
 from __future__ import annotations
@@ -81,7 +82,7 @@ class TagsStore:
         )
 
     def _sync_iptc(self, image_path: str) -> None:
-        """Write current tags for *image_path* into its IPTC metadata."""
+        """Write current tags for *image_path* into embedded metadata when supported."""
         try:
             from app.core.tags_writer import write_tags
 
@@ -144,6 +145,13 @@ class TagsStore:
             conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
         for path in affected:
             self._sync_iptc(path)
+
+    def clear_tags_for_image(self, image_path: str) -> None:
+        """Remove every tag assignment for *image_path* and refresh embedded metadata."""
+        norm = str(Path(image_path).resolve())
+        with self._connect() as conn:
+            conn.execute("DELETE FROM image_tags WHERE image_path = ?", (norm,))
+        self._sync_iptc(norm)
 
     def rename_tag(self, tag_id: int, new_name: str) -> None:
         new_name = new_name.strip()

@@ -182,6 +182,10 @@ class ThumbnailCache(QObject):
         self._pending: set[tuple[str, int]] = set()
         self._ready_images: dict[str, QImage] = {}
 
+    def cache_directory(self) -> Path:
+        """Directory where WebP thumbnail cache files are stored."""
+        return self._cache_dir
+
     def _emit_ready(self, path: str, image: QImage, key: str | None, tier_dim: int) -> None:
         self._pending.discard((path, tier_dim))
         if key:

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.tags_store import TagsStore
+from app.ui.context_menus import style_context_menu
 from app.ui.mason_tab_widget import MasonPanelHeader
 from app.ui.micro_icons import TAGGING_MODE_TOOLBUTTON_QSS, tag_icon
 from app.ui.tag_check_tree import TagCheckTreeWidget
@@ -80,7 +81,10 @@ class TagsPanel(QWidget):
 
         self._wheel_watch.add(self)
         self._wheel_watch.add(self._body)
+        self._wheel_watch.add(self._tree)
         self._wheel_watch.add(self._tree.viewport())
+        self._wheel_watch.add(self._tree.verticalScrollBar())
+        self._wheel_watch.add(self._tree.horizontalScrollBar())
         self._wheel_watch.add(self._header)
         self._wheel_watch.add(self._header.divider_line())
         self._wheel_watch.update(self._header.findChildren(QWidget))
@@ -115,6 +119,15 @@ class TagsPanel(QWidget):
         self._selected_paths = ordered
         self._sync_checks()
 
+    def reload_tree_from_store(self) -> None:
+        """Rebuild the tag tree after the store changed without going through this panel."""
+        self._reload_tree()
+        self._sync_checks()
+
+    def sync_checks_from_store(self) -> None:
+        """Refresh row checkboxes from SQLite (tag list shape unchanged)."""
+        self._sync_checks()
+
     def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
         if obj not in self._wheel_watch:
             return super().eventFilter(obj, event)
@@ -123,12 +136,19 @@ class TagsPanel(QWidget):
         if event.type() == QEvent.Type.Wheel and isinstance(event, QWheelEvent):
             self._tagging_handle_wheel(event)
             return True
-        if event.type() == QEvent.Type.MouseButtonRelease and isinstance(event, QMouseEvent):
-            if event.button() == Qt.MouseButton.MiddleButton:
+        if isinstance(event, QMouseEvent) and event.button() == Qt.MouseButton.MiddleButton:
+            # Swallow middle-button press/double-click so Qt does not move the current row;
+            # only the active tag (currentItem) is toggled on release, from any panel hit.
+            if event.type() in (
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonDblClick,
+            ):
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease:
                 cur = self._tree.currentItem()
                 if cur is not None:
                     self._on_middle_toggle_tag(cur)
-                    return True
+                return True
         return super().eventFilter(obj, event)
 
     def _on_tagging_mode_toggled(self, on: bool) -> None:
@@ -199,6 +219,7 @@ class TagsPanel(QWidget):
     def _show_context_menu(self, pos) -> None:
         item = self._tree.itemAt(pos)
         menu = QMenu(self)
+        style_context_menu(menu)
         if item is None:
             add_root = menu.addAction("Add Tag")
             menu.addSeparator()
