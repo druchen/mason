@@ -1,0 +1,2 @@
+# One-off Windows packaging (PyInstaller + Inno Setup compiler on PATH).
+pyinstaller>=6.0,<8

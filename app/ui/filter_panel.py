@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from app.core.sort_filter import TagMatchMode
 from app.core.tags_store import TagsStore
-from app.ui.mason_tab_widget import MasonTabWidget
+from app.ui.mason_tab_widget import MasonPanelHeader
 from app.ui.micro_icons import ICON_TOOLBUTTON_QSS, chevron_down_small_pm, no_sign_pm
 from app.ui.tag_check_tree import TagCheckTreeWidget
 
@@ -112,12 +112,18 @@ class FilterPanel(QWidget):
         page_lay.addWidget(row)
         page_lay.addWidget(self._tree, stretch=1)
 
-        self._tabs = MasonTabWidget()
-        self._tabs.addTab(filter_page, "Filter")
+        self._header = MasonPanelHeader("Filter")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self._tabs, 1)
+        lay.setSpacing(0)
+        lay.addWidget(self._header)
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(0)
+        body_lay.addWidget(filter_page, 1)
+        lay.addWidget(body, 1)
 
         self._configure_popup_width()
         self._sync_filter_row_height()

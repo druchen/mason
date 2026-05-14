@@ -3,8 +3,48 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QTabBar, QTabWidget, QWidget
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
+from PySide6.QtWidgets import QFrame, QLabel, QTabBar, QTabWidget, QVBoxLayout, QWidget
+
+
+class MasonPanelHeader(QWidget):
+    """Single-row title strip plus divider; matches mason tab bar height (no tabs)."""
+
+    @staticmethod
+    def title_bar_inner_height(widget: QWidget) -> int:
+        fm = QFontMetrics(widget.font())
+        return max(28, min(36, fm.height() + 11))
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self._title = QLabel(title)
+        self._title.setObjectName("masonPanelHeaderTitle")
+        h = MasonPanelHeader.title_bar_inner_height(self)
+        self._title.setFixedHeight(h)
+        self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self._title)
+
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.NoFrame)
+        line.setFixedHeight(1)
+        line.setStyleSheet("background-color: #666666;")
+        lay.addWidget(line)
+
+        self.setStyleSheet(
+            """
+            QLabel#masonPanelHeaderTitle {
+                background: #1f1f1f;
+                color: #d8d8d8;
+                padding-left: 12px;
+                padding-right: 12px;
+                border: none;
+            }
+            """
+        )
 
 
 class MasonTabWidget(QTabWidget):

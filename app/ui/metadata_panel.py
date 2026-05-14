@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from app.core.metadata_reader import read_metadata_summary
 from app.core.tags_store import TagsStore
-from app.ui.mason_tab_widget import MasonTabWidget
+from app.ui.mason_tab_widget import MasonPanelHeader
 
 
 class MetadataPanel(QWidget):
@@ -76,12 +76,18 @@ class MetadataPanel(QWidget):
 
         scroll.setWidget(inner)
 
-        self._tabs = MasonTabWidget()
-        self._tabs.addTab(scroll, "Metadata")
+        self._header = MasonPanelHeader("Metadata")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self._tabs, 1)
+        root.setSpacing(0)
+        root.addWidget(self._header)
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(0)
+        body_lay.addWidget(scroll, 1)
+        root.addWidget(body, 1)
 
         self.setStyleSheet(
             """

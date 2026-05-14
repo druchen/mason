@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.tags_store import TagsStore
-from app.ui.mason_tab_widget import MasonTabWidget
+from app.ui.mason_tab_widget import MasonPanelHeader
 from app.ui.tag_check_tree import TagCheckTreeWidget
 
 
@@ -49,12 +49,18 @@ class TagsPanel(QWidget):
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
 
-        self._tabs = MasonTabWidget()
-        self._tabs.addTab(self._tree, "Tags")
+        self._header = MasonPanelHeader("Tags")
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self._tabs, 1)
+        lay.setSpacing(0)
+        lay.addWidget(self._header)
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 8, 0, 0)
+        body_lay.setSpacing(0)
+        body_lay.addWidget(self._tree, 1)
+        lay.addWidget(body, 1)
 
         self._reload_tree()
 
