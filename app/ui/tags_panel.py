@@ -62,6 +62,11 @@ class TagsPanel(QWidget):
         body_lay.addWidget(self._tree, 1)
         lay.addWidget(body, 1)
 
+        # Do not take keyboard focus on click — preview keeps focus for arrow keys / shortcuts.
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        body.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
         self._reload_tree()
 
     # ------------------------------------------------------------------

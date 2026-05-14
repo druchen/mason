@@ -128,12 +128,15 @@ class TabBarGapDividerLine(QWidget):
         tab_bar.installEventFilter(self)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        if obj is self._tb and event.type() in (
-            QEvent.Type.Resize,
-            QEvent.Type.Move,
-            QEvent.Type.Show,
-        ):
-            self.update()
+        if obj is self._tb:
+            et = event.type()
+            if et in (
+                QEvent.Type.Resize,
+                QEvent.Type.Move,
+                QEvent.Type.Show,
+                QEvent.Type.DynamicPropertyChange,
+            ):
+                self.update()
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event) -> None:
@@ -150,6 +153,11 @@ class TabBarGapDividerLine(QWidget):
         idx = tb.currentIndex()
         p = QPainter(self)
         p.setPen(QPen(QColor("#666666")))
+        # Match preview tab styling: no "selected" tab when browsing a non-favorite folder.
+        if tb.property("mason_browse_non_favorite"):
+            p.drawLine(0, 0, w, 0)
+            p.end()
+            return
         if n <= 1 or idx < 0:
             p.drawLine(0, 0, w, 0)
             p.end()

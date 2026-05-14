@@ -63,6 +63,18 @@ QTabBar#preview_fav_tab_bar::tab:selected {
 QTabBar#preview_fav_tab_bar::tab:hover:!selected {
     background-color: #2a2a2a;
 }
+QTabBar#preview_fav_tab_bar[mason_browse_non_favorite="true"]::tab:selected {
+    margin-bottom: 0;
+    padding: 4px 8px 4px 14px;
+    background-color: #1f1f1f;
+    color: #d8d8d8;
+    border: 1px solid #404040;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+}
+QTabBar#preview_fav_tab_bar[mason_browse_non_favorite="true"]::tab:hover {
+    background-color: #2a2a2a;
+}
 """
 
 
@@ -98,6 +110,7 @@ class PreviewPanel(QWidget):
         self._fav_tabs = QTabBar()
         self._fav_tabs.setObjectName("preview_fav_tab_bar")
         self._fav_tabs.setStyleSheet(_PREVIEW_FAV_TAB_QSS)
+        self._fav_tabs.setProperty("mason_browse_non_favorite", False)
         self._fav_tabs.setMovable(True)
         self._fav_tabs.setExpanding(False)
         self._fav_tabs.setUsesScrollButtons(True)
@@ -105,6 +118,7 @@ class PreviewPanel(QWidget):
         self._fav_tabs.setElideMode(Qt.TextElideMode.ElideRight)
         self._fav_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._fav_tabs.currentChanged.connect(self._on_fav_tab_changed)
+        self._fav_tabs.tabBarClicked.connect(self._on_fav_tab_clicked)
         self._fav_tabs.tabMoved.connect(self._on_fav_tabs_moved)
 
         self._sort_bar = SortControlBar()
@@ -236,6 +250,13 @@ class PreviewPanel(QWidget):
             self._syncing_fav_tabs = False
             self._fav_tab_divider.update()
 
+    def _repolish_fav_tab_bar(self) -> None:
+        sty = self._fav_tabs.style()
+        if sty is not None:
+            sty.unpolish(self._fav_tabs)
+            sty.polish(self._fav_tabs)
+        self._fav_tabs.update()
+
     def sync_favorite_tab_for_path(self, path: str) -> None:
         try:
             target = str(Path(path).resolve())
@@ -261,13 +282,27 @@ class PreviewPanel(QWidget):
         self._fav_tabs.blockSignals(True)
         try:
             if idx >= 0:
+                self._fav_tabs.setProperty("mason_browse_non_favorite", False)
                 self._fav_tabs.setCurrentIndex(idx)
+            else:
+                self._fav_tabs.setProperty("mason_browse_non_favorite", True)
+                n = self._fav_tabs.count()
+                if n > 0:
+                    # QTabBar cannot deselect all tabs; rotate off the previous index so a later
+                    # click on any favorite still fires currentChanged / tabBarClicked as expected.
+                    cur = self._fav_tabs.currentIndex()
+                    if n > 1:
+                        self._fav_tabs.setCurrentIndex((cur + 1) % n)
+                    else:
+                        self._fav_tabs.setCurrentIndex(0)
+            self._repolish_fav_tab_bar()
+            self._fav_tab_divider.update()
         finally:
             self._fav_tabs.blockSignals(False)
             self._syncing_fav_tabs = False
 
-    def _on_fav_tab_changed(self, index: int) -> None:
-        if self._syncing_fav_tabs or index < 0:
+    def _emit_favorite_from_tab(self, index: int) -> None:
+        if index < 0:
             return
         d = self._fav_tabs.tabData(index)
         if not isinstance(d, dict):
@@ -275,6 +310,17 @@ class PreviewPanel(QWidget):
         p = d.get("path")
         if isinstance(p, str) and Path(p).is_dir():
             self.favorite_folder_selected.emit(p)
+
+    def _on_fav_tab_clicked(self, index: int) -> None:
+        """Mouse click on a tab (including re-clicking the current tab)."""
+        if self._syncing_fav_tabs or index < 0:
+            return
+        self._emit_favorite_from_tab(index)
+
+    def _on_fav_tab_changed(self, index: int) -> None:
+        if self._syncing_fav_tabs or index < 0:
+            return
+        self._emit_favorite_from_tab(index)
 
     def _on_fav_tabs_moved(self, _from: int, _to: int) -> None:
         del _from, _to

@@ -41,6 +41,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "photoshop_exe": "",
     "drop_save_format": "webp",
     "favorite_folders": [],
+    "confirm_delete_files": True,
 }
 
 # Must match app.ui.toolbar.MainToolbar.MODES (avoid importing Qt from here).
@@ -142,6 +143,16 @@ def _sanitize_settings(data: dict[str, Any]) -> dict[str, Any]:
         out["layout_mode"] = str(DEFAULT_SETTINGS["layout_mode"])
     else:
         out["layout_mode"] = lm_mode
+
+    v = out.get("confirm_delete_files", DEFAULT_SETTINGS["confirm_delete_files"])
+    if isinstance(v, bool):
+        out["confirm_delete_files"] = v
+    elif isinstance(v, (int, float)):
+        out["confirm_delete_files"] = bool(int(v))
+    elif isinstance(v, str):
+        out["confirm_delete_files"] = v.strip().lower() not in ("0", "false", "no", "")
+    else:
+        out["confirm_delete_files"] = bool(DEFAULT_SETTINGS["confirm_delete_files"])
 
     return out
 

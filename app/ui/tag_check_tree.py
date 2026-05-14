@@ -204,6 +204,8 @@ class TagCheckTreeWidget(QTreeWidget):
         self._tree_style = _CompactTagTreeStyle(base)
         self._tree_style.indicator_px = TAG_TREE_CHECKBOX_PX
         self.setStyle(self._tree_style)
+        # Keep keyboard focus on the preview: clicks toggle checks but do not focus this tree.
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._press_pos_vp: QPoint | None = None
         self._press_item: QTreeWidgetItem | None = None
 

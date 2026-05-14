@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -36,6 +37,7 @@ class SettingsDialog(QDialog):
         *,
         current_folder: str = "",
         thumbnail_cache: ThumbnailCache | None = None,
+        confirm_delete_files: bool = True,
     ) -> None:
         super().__init__(parent)
         self._current_folder = current_folder.strip()
@@ -86,6 +88,14 @@ class SettingsDialog(QDialog):
         save_lay.addWidget(self._format)
 
         root.addWidget(save_grp)
+
+        files_grp = QGroupBox("Files")
+        files_lay = QVBoxLayout(files_grp)
+        files_lay.setSpacing(6)
+        self._confirm_delete_cb = QCheckBox("Ask for confirmation before deleting images")
+        self._confirm_delete_cb.setChecked(confirm_delete_files)
+        files_lay.addWidget(self._confirm_delete_cb)
+        root.addWidget(files_grp)
 
         thumbs_grp = QGroupBox("Thumbnails")
         thumbs_lay = QVBoxLayout(thumbs_grp)
@@ -144,6 +154,9 @@ class SettingsDialog(QDialog):
     def drop_save_format(self) -> str:
         data = self._format.currentData()
         return normalize_drop_format(str(data) if data is not None else "webp")
+
+    def confirm_delete_files(self) -> bool:
+        return self._confirm_delete_cb.isChecked()
 
     def _sync_folder_caption(self) -> None:
         if not self._current_folder:

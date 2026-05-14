@@ -8,6 +8,7 @@ from typing import Any
 
 from PySide6.QtCore import QByteArray, QPoint, QMimeData, Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QMainWindow,
     QMessageBox,
@@ -510,10 +511,19 @@ class MainWindow(QMainWindow):
             self._preview.select_primary_path(pick)
 
     def _on_folder_selected(self, path: str) -> None:
+        try:
+            new_n = str(Path(path).resolve())
+            cur_n = str(Path(self._folder).resolve())
+        except OSError:
+            new_n, cur_n = path, self._folder
+        same_folder = new_n == cur_n
+
         self._folder = path
         self._preview.set_import_drop_folder(self._folder)
         self._folder_panel.select_path(path)
         self._preview.sync_favorite_tab_for_path(path)
+        if same_folder:
+            return
         self._load_folder(path)
 
     def _on_favorites_changed(self, data: object) -> None:
@@ -595,12 +605,14 @@ class MainWindow(QMainWindow):
             self,
             current_folder=self._folder,
             thumbnail_cache=self._thumb_cache,
+            confirm_delete_files=bool(self._settings.get("confirm_delete_files", True)),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         self._photoshop_exe = dlg.photoshop_exe()
         self._settings["photoshop_exe"] = self._photoshop_exe
         self._settings["drop_save_format"] = dlg.drop_save_format()
+        self._settings["confirm_delete_files"] = dlg.confirm_delete_files()
         self._save_settings()
 
     def _open_in_photoshop(self, path: str) -> None:
@@ -715,21 +727,31 @@ class MainWindow(QMainWindow):
     def _delete_files(self, paths: list[str]) -> None:
         if not paths:
             return
-        count = len(paths)
-        noun = "file" if count == 1 else "files"
-        names = "\n".join(Path(p).name for p in paths[:8])
-        if count > 8:
-            names += f"\n… and {count - 8} more"
-        ret = QMessageBox.question(
-            self,
-            "Delete files",
-            f"Permanently delete {count} {noun}?\n\n{names}\n\nThis cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if ret != QMessageBox.StandardButton.Yes:
-            return
+        if self._settings.get("confirm_delete_files", True):
+            count = len(paths)
+            noun = "file" if count == 1 else "files"
+            names = "\n".join(Path(p).name for p in paths[:8])
+            if count > 8:
+                names += f"\n… and {count - 8} more"
+            mb = QMessageBox(self)
+            mb.setIcon(QMessageBox.Icon.Question)
+            mb.setWindowTitle("Delete files")
+            mb.setText(f"Permanently delete {count} {noun}?")
+            mb.setInformativeText(f"{names}\n\nThis cannot be undone.")
+            mb.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            mb.setDefaultButton(QMessageBox.StandardButton.No)
+            dont_ask = QCheckBox("Don't ask again")
+            mb.setCheckBox(dont_ask)
+            if mb.exec() != QMessageBox.StandardButton.Yes:
+                return
+            if dont_ask.isChecked():
+                self._settings["confirm_delete_files"] = False
+                settings_mod.save_settings({"confirm_delete_files": False})
+        self._execute_delete(paths)
 
+    def _execute_delete(self, paths: list[str]) -> None:
         deleted: set[str] = set()
         for path in paths:
             try:
@@ -781,6 +803,7 @@ class MainWindow(QMainWindow):
             "photoshop_exe": self._photoshop_exe,
             "drop_save_format": str(self._settings.get("drop_save_format") or "webp"),
             "favorite_folders": self._folder_panel.favorites_for_settings(),
+            "confirm_delete_files": bool(self._settings.get("confirm_delete_files", True)),
             "window_geometry": {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()},
             "splitter_main": self._split_main.sizes(),
             "splitter_left": self._split_left.sizes(),
