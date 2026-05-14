@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
         import_tags_from_folder(self._raw_paths, self._store)
         self._selected_image = None
         self._metadata.clear()
-        self._tags.set_selected_image(None)
+        self._sync_tags_selection()
         self._refresh_paths()
 
     def _refresh_paths(self) -> None:
@@ -559,8 +559,20 @@ class MainWindow(QMainWindow):
         if self._selected_image and self._selected_image not in paths:
             self._selected_image = None
             self._metadata.clear()
-            self._tags.set_selected_image(None)
+            self._tags.set_selection([], None)
+        elif self._selected_image:
+            self._sync_tags_selection()
         self._preview.sync_favorite_tab_for_path(self._folder)
+
+    def _sync_tags_selection(self) -> None:
+        primary = self._selected_image
+        if not primary:
+            self._tags.set_selection([], None)
+            return
+        paths = self._preview.selected_paths()
+        if not paths:
+            paths = [primary]
+        self._tags.set_selection(paths, primary)
 
     # ------------------------------------------------------------------
     # Handlers
@@ -569,7 +581,7 @@ class MainWindow(QMainWindow):
     def _on_preview_selection(self, path: str) -> None:
         self._selected_image = path
         self._metadata.show_path(path)
-        self._tags.set_selected_image(path)
+        self._sync_tags_selection()
         self._preview.take_preview_focus()
 
     def _on_layout_mode(self, mode: str) -> None:
@@ -693,7 +705,6 @@ class MainWindow(QMainWindow):
             if sel_res == old_res or self._selected_image == str(old):
                 self._selected_image = new_str
                 self._metadata.show_path(new_str)
-                self._tags.set_selected_image(new_str)
 
         self._refresh_paths()
 
@@ -715,10 +726,11 @@ class MainWindow(QMainWindow):
         """Keep metadata / tags panels in sync while navigating in fullscreen."""
         self._selected_image = path
         self._metadata.show_path(path)
-        self._tags.set_selected_image(path)
+        self._tags.set_selection([path], path)
 
     def _on_fullscreen_closed(self) -> None:
         self._fullscreen_view = None
+        self._sync_tags_selection()
 
     # ------------------------------------------------------------------
     # File deletion
@@ -781,7 +793,7 @@ class MainWindow(QMainWindow):
         if self._selected_image in deleted:
             self._selected_image = None
             self._metadata.clear()
-            self._tags.set_selected_image(None)
+            self._tags.set_selection([], None)
         self._refresh_paths()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]

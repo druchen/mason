@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QLabel, QTabBar, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QTabBar, QTabWidget, QVBoxLayout, QWidget
 
 
 class MasonPanelHeader(QWidget):
@@ -15,7 +15,12 @@ class MasonPanelHeader(QWidget):
         fm = QFontMetrics(widget.font())
         return max(28, min(36, fm.height() + 11))
 
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        parent: QWidget | None = None,
+        trailing: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -25,14 +30,31 @@ class MasonPanelHeader(QWidget):
         self._title.setObjectName("masonPanelHeaderTitle")
         h = MasonPanelHeader.title_bar_inner_height(self)
         self._title.setFixedHeight(h)
-        self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        lay.addWidget(self._title)
+        self._top_row: QWidget | None = None
+
+        if trailing is None:
+            self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            lay.addWidget(self._title)
+        else:
+            row = QWidget()
+            row.setFixedHeight(h)
+            row.setStyleSheet("background-color: #1f1f1f;")
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 6, 0)
+            hl.setSpacing(4)
+            self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            hl.addWidget(self._title, 0, Qt.AlignmentFlag.AlignVCenter)
+            hl.addStretch(1)
+            hl.addWidget(trailing, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._top_row = row
+            lay.addWidget(row)
 
         line = QFrame()
         line.setFrameShape(QFrame.Shape.NoFrame)
         line.setFixedHeight(1)
         line.setStyleSheet("background-color: #666666;")
-        lay.addWidget(line)
+        self._divider_line = line
+        lay.addWidget(self._divider_line)
 
         self.setStyleSheet(
             """
@@ -45,6 +67,14 @@ class MasonPanelHeader(QWidget):
             }
             """
         )
+
+    def top_row_widget(self) -> QWidget | None:
+        """Header row containing title + optional trailing controls, or ``None`` if title-only."""
+        return self._top_row
+
+    def divider_line(self) -> QFrame:
+        """One-pixel separator below the title row (same for all headers)."""
+        return self._divider_line
 
 
 class MasonTabWidget(QTabWidget):

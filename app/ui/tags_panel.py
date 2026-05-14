@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QInputDialog,
     QMenu,
     QMessageBox,
+    QToolButton,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -17,11 +19,12 @@ from PySide6.QtWidgets import (
 
 from app.core.tags_store import TagsStore
 from app.ui.mason_tab_widget import MasonPanelHeader
+from app.ui.micro_icons import TAGGING_MODE_TOOLBUTTON_QSS, tag_icon
 from app.ui.tag_check_tree import TagCheckTreeWidget
 
 
 class TagsPanel(QWidget):
-    """Tree of tags; check to assign to selected image; add/rename/delete via context menu."""
+    """Tree of tags; check to assign to selected image(s); add/rename/delete via context menu."""
 
     tags_changed = Signal()
     tag_order_changed = Signal()
@@ -29,8 +32,21 @@ class TagsPanel(QWidget):
     def __init__(self, store: TagsStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._store = store
-        self._current_image: str | None = None
+        self._selected_paths: list[str] = []
         self._tree_reload_active = False
+        self._wheel_watch: set[QWidget] = set()
+
+        self._tagging_btn = QToolButton()
+        self._tagging_btn.setObjectName("tagsTaggingModeBtn")
+        self._tagging_btn.setCheckable(True)
+        self._tagging_btn.setAutoRaise(True)
+        self._tagging_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._tagging_btn.setIcon(tag_icon())
+        self._tagging_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._tagging_btn.setIconSize(QSize(16, 16))
+        self._tagging_btn.setToolTip("Tagging Mode")
+        self._tagging_btn.setAccessibleName("Tagging Mode")
+        self._tagging_btn.setStyleSheet(TAGGING_MODE_TOOLBUTTON_QSS)
 
         self._tree = TagCheckTreeWidget()
         self._tree.setColumnCount(1)
@@ -49,23 +65,34 @@ class TagsPanel(QWidget):
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
 
-        self._header = MasonPanelHeader("Tags")
+        self._header = MasonPanelHeader("Tags", self, trailing=self._tagging_btn)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self._header)
-        body = QWidget()
-        body_lay = QVBoxLayout(body)
+        self._body = QWidget()
+        body_lay = QVBoxLayout(self._body)
         body_lay.setContentsMargins(0, 8, 0, 0)
         body_lay.setSpacing(0)
         body_lay.addWidget(self._tree, 1)
-        lay.addWidget(body, 1)
+        lay.addWidget(self._body, 1)
+
+        self._wheel_watch.add(self)
+        self._wheel_watch.add(self._body)
+        self._wheel_watch.add(self._tree.viewport())
+        self._wheel_watch.add(self._header)
+        self._wheel_watch.add(self._header.divider_line())
+        self._wheel_watch.update(self._header.findChildren(QWidget))
+        for w in self._wheel_watch:
+            w.installEventFilter(self)
+
+        self._tagging_btn.toggled.connect(self._on_tagging_mode_toggled)
 
         # Do not take keyboard focus on click — preview keeps focus for arrow keys / shortcuts.
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        body.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._body.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         self._reload_tree()
 
@@ -73,9 +100,97 @@ class TagsPanel(QWidget):
     # Public interface
     # ------------------------------------------------------------------
 
-    def set_selected_image(self, path: str | None) -> None:
-        self._current_image = path
+    def set_selection(self, paths: list[str], primary: str | None) -> None:
+        """``paths`` are all selected preview images; ``primary`` is the focused row (metadata path)."""
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for p in paths:
+            if not p or p in seen:
+                continue
+            seen.add(p)
+            ordered.append(p)
+        if primary and primary not in seen:
+            seen.add(primary)
+            ordered.append(primary)
+        self._selected_paths = ordered
         self._sync_checks()
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        if obj not in self._wheel_watch:
+            return super().eventFilter(obj, event)
+        if not self._tagging_btn.isChecked():
+            return super().eventFilter(obj, event)
+        if event.type() == QEvent.Type.Wheel and isinstance(event, QWheelEvent):
+            self._tagging_handle_wheel(event)
+            return True
+        if event.type() == QEvent.Type.MouseButtonRelease and isinstance(event, QMouseEvent):
+            if event.button() == Qt.MouseButton.MiddleButton:
+                cur = self._tree.currentItem()
+                if cur is not None:
+                    self._on_middle_toggle_tag(cur)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _on_tagging_mode_toggled(self, on: bool) -> None:
+        if on and self._tree.currentItem() is None:
+            rows = self._flatten_tag_items()
+            if rows:
+                self._tree.setCurrentItem(rows[0])
+                self._tree.scrollToItem(rows[0], QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _flatten_tag_items(self) -> list[QTreeWidgetItem]:
+        out: list[QTreeWidgetItem] = []
+
+        def walk(it: QTreeWidgetItem) -> None:
+            tid = it.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(tid, int):
+                out.append(it)
+            for i in range(it.childCount()):
+                walk(it.child(i))
+
+        for i in range(self._tree.topLevelItemCount()):
+            walk(self._tree.topLevelItem(i))
+        return out
+
+    def _tagging_handle_wheel(self, event: QWheelEvent) -> None:
+        items = self._flatten_tag_items()
+        if not items:
+            return
+        cur = self._tree.currentItem()
+        if cur is not None and cur in items:
+            idx = items.index(cur)
+        else:
+            idx = 0
+        dy = event.pixelDelta().y()
+        if dy == 0:
+            dy = event.angleDelta().y()
+        if dy > 0:
+            idx = max(0, idx - 1)
+        elif dy < 0:
+            idx = min(len(items) - 1, idx + 1)
+        else:
+            return
+        nxt = items[idx]
+        self._tree.setCurrentItem(nxt)
+        self._tree.scrollToItem(nxt, QAbstractItemView.ScrollHint.EnsureVisible)
+
+    def _on_middle_toggle_tag(self, item: QTreeWidgetItem | None) -> None:
+        if not self._tagging_btn.isChecked():
+            return
+        if item is None:
+            return
+        if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+            return
+        tid = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(tid, int):
+            return
+        self._toggle_item_check(item)
+
+    def _toggle_item_check(self, item: QTreeWidgetItem) -> None:
+        if item.checkState(0) == Qt.CheckState.Checked:
+            item.setCheckState(0, Qt.CheckState.Unchecked)
+        else:
+            item.setCheckState(0, Qt.CheckState.Checked)
 
     # ------------------------------------------------------------------
     # Context menu
@@ -129,8 +244,8 @@ class TagsPanel(QWidget):
         if tid == 0:
             QMessageBox.information(self, "Add tag", "A tag with that name already exists.")
             return
-        if self._current_image:
-            self._store.assign_tag_to_image(self._current_image, tid)
+        for p in self._selected_paths:
+            self._store.assign_tag_to_image(p, tid)
         self._reload_tree()
         self._expand_through_parent(parent_id)
         self.tags_changed.emit()
@@ -307,18 +422,35 @@ class TagsPanel(QWidget):
             walk(self._tree.topLevelItem(i))
 
     def _sync_checks(self) -> None:
-        assigned_ids: set[int] = set()
-        if self._current_image:
-            assigned_ids = {tid for tid, _ in self._store.get_tags_for_image(self._current_image)}
+        paths = self._selected_paths
+        tag_by_path: dict[str, set[int]] = {}
+        if paths:
+            tag_by_path = {
+                p: {tid for tid, _ in self._store.get_tags_for_image(p)} for p in paths
+            }
         self._tree.blockSignals(True)
 
         def walk(it: QTreeWidgetItem) -> None:
             tid = it.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(tid, int):
-                it.setCheckState(
-                    0,
-                    Qt.CheckState.Checked if tid in assigned_ids else Qt.CheckState.Unchecked,
-                )
+                if not paths:
+                    st = Qt.CheckState.Unchecked
+                elif len(paths) == 1:
+                    only = paths[0]
+                    st = (
+                        Qt.CheckState.Checked
+                        if tid in tag_by_path.get(only, set())
+                        else Qt.CheckState.Unchecked
+                    )
+                else:
+                    n = sum(1 for p in paths if tid in tag_by_path.get(p, set()))
+                    if n == 0:
+                        st = Qt.CheckState.Unchecked
+                    elif n == len(paths):
+                        st = Qt.CheckState.Checked
+                    else:
+                        st = Qt.CheckState.PartiallyChecked
+                it.setCheckState(0, st)
             for i in range(it.childCount()):
                 walk(it.child(i))
 
@@ -329,8 +461,11 @@ class TagsPanel(QWidget):
     def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if column != 0:
             return
-        if not self._current_image:
+        if not self._selected_paths:
             self._sync_checks()
+            return
+        state = item.checkState(0)
+        if state == Qt.CheckState.PartiallyChecked:
             return
         tid = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(tid, int):
@@ -339,11 +474,12 @@ class TagsPanel(QWidget):
         parent_tid = parent_item.data(0, Qt.ItemDataRole.UserRole) if parent_item else None
         if not isinstance(parent_tid, int):
             parent_tid = None
-        if item.checkState(0) == Qt.CheckState.Checked:
-            self._store.assign_tag_to_image(self._current_image, tid)
-            if parent_tid is not None:
-                self._store.assign_tag_to_image(self._current_image, parent_tid)
-        else:
-            self._store.remove_tag_from_image(self._current_image, tid)
+        for image_path in self._selected_paths:
+            if state == Qt.CheckState.Checked:
+                self._store.assign_tag_to_image(image_path, tid)
+                if parent_tid is not None:
+                    self._store.assign_tag_to_image(image_path, parent_tid)
+            else:
+                self._store.remove_tag_from_image(image_path, tid)
         self._sync_checks()
         self.tags_changed.emit()

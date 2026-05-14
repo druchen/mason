@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPainterPath
 
 
 def chevron_down_small_pm() -> QPixmap:
@@ -82,6 +82,36 @@ def gear_icon() -> QIcon:
     return QIcon(gear_pm(16))
 
 
+def tag_icon_pm(d: int = 16) -> QPixmap:
+    """Small price-tag outline (line art, matches other panel icons)."""
+    pm = QPixmap(d, d)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(160, 160, 160))
+    pen.setWidthF(1.65)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    hole = QRectF(4.2, 3.2, 2.8, 2.8)
+    p.drawEllipse(hole)
+    path = QPainterPath()
+    path.moveTo(6.8, 5.2)
+    path.lineTo(12.5, 3.0)
+    path.lineTo(13.2, 5.2)
+    path.lineTo(7.2, 13.2)
+    path.lineTo(4.2, 12.2)
+    path.closeSubpath()
+    p.drawPath(path)
+    p.end()
+    return pm
+
+
+def tag_icon() -> QIcon:
+    return QIcon(tag_icon_pm(16))
+
+
 def no_sign_pm(d: int = 14) -> QPixmap:
     """Circle with diagonal (clear / prohibit)."""
     pm = QPixmap(d, d)
@@ -113,3 +143,16 @@ QToolButton {
 QToolButton:hover { background-color: #222222; }
 QToolButton:pressed { background-color: #505050; }
 """
+
+# Tagging Mode toggle (checked = active); extends base icon toolbutton look.
+TAGGING_MODE_TOOLBUTTON_QSS = (
+    ICON_TOOLBUTTON_QSS
+    + """
+QToolButton:checked {
+    background-color: #505050;
+}
+QToolButton:checked:hover {
+    background-color: #5a5a5a;
+}
+"""
+)
