@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from app.core.metadata_reader import read_metadata_summary
 from app.core.tags_store import TagsStore
+from app.ui.mason_tab_widget import MasonTabWidget
 
 
 class MetadataPanel(QWidget):
@@ -33,14 +34,6 @@ class MetadataPanel(QWidget):
         self._store = store
         self.setObjectName("metadataPanel")
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
-
-        title = QLabel("Metadata")
-        title.setObjectName("metadataTitle")
-        root.addWidget(title)
-
         scroll = QScrollArea()
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -50,7 +43,7 @@ class MetadataPanel(QWidget):
         inner = QWidget()
         inner.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         inner_lay = QVBoxLayout(inner)
-        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setContentsMargins(12, 0, 12, 0)
         inner_lay.setSpacing(0)
 
         grid = QGridLayout()
@@ -82,15 +75,16 @@ class MetadataPanel(QWidget):
         inner_lay.addStretch(1)
 
         scroll.setWidget(inner)
-        root.addWidget(scroll, 1)
+
+        self._tabs = MasonTabWidget()
+        self._tabs.addTab(scroll, "Metadata")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.addWidget(self._tabs, 1)
 
         self.setStyleSheet(
             """
-            QWidget#metadataPanel QLabel#metadataTitle {
-                color: #e0e0e0;
-                font-weight: bold;
-                margin-bottom: 2px;
-            }
             QWidget#metadataPanel QLabel#metadataKey {
                 color: #8a8a8a;
                 margin: 0px;

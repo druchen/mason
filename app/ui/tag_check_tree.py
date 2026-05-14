@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QDropEvent, QMouseEvent
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDropEvent,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QProxyStyle,
@@ -54,6 +62,17 @@ class _CompactTagTreeStyle(QProxyStyle):
 
     indicator_px: int = 14
 
+    def styleHint(
+        self,
+        hint: QStyle.StyleHint,
+        option: QStyleOption | None = None,
+        widget=None,
+        returnData=None,
+    ) -> int:
+        if hint == QStyle.StyleHint.SH_ScrollBar_Transient:
+            return 1
+        return super().styleHint(hint, option, widget, returnData)
+
     def pixelMetric(
         self,
         metric: QStyle.PixelMetric,
@@ -82,6 +101,94 @@ class _CompactTagTreeStyle(QProxyStyle):
         if isinstance(option, QStyleOptionViewItem):
             out = out.intersected(option.rect)
         return out
+
+    def drawPrimitive(
+        self,
+        element: QStyle.PrimitiveElement,
+        option: QStyleOption | None,
+        painter: QPainter | None,
+        widget=None,
+    ) -> None:
+        if (
+            element
+            in (
+                QStyle.PrimitiveElement.PE_IndicatorCheckBox,
+                QStyle.PrimitiveElement.PE_IndicatorItemViewItemCheck,
+            )
+            and option is not None
+            and painter is not None
+            and widget is not None
+            and widget.__class__.__name__ == "TagCheckTreeWidget"
+        ):
+            self._draw_tag_tree_checkbox(painter, option)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def _draw_tag_tree_checkbox(self, painter: QPainter, option: QStyleOption) -> None:
+        """Dark neutral rounded box; checked = slightly stronger gray border + tick."""
+        r = option.rect
+        if r.width() < 2 or r.height() < 2:
+            return
+        st = option.state
+        enabled = bool(st & QStyle.StateFlag.State_Enabled)
+        hover = enabled and bool(st & QStyle.StateFlag.State_MouseOver)
+
+        checked = bool(st & QStyle.StateFlag.State_On)
+        indeterminate = bool(st & QStyle.StateFlag.State_NoChange) and not checked
+        if isinstance(option, QStyleOptionViewItem):
+            cs = option.checkState
+            if cs == Qt.CheckState.Checked:
+                checked, indeterminate = True, False
+            elif cs == Qt.CheckState.PartiallyChecked:
+                checked, indeterminate = False, True
+            else:
+                checked, indeterminate = False, False
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rf = QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = 3.0
+
+        if not enabled:
+            bg = QColor("#262626")
+            border = QColor("#383838")
+        elif hover and checked:
+            bg = QColor("#363636")
+            border = QColor("#787878")
+        elif hover:
+            bg = QColor("#323232")
+            border = QColor("#4e4e4e")
+        elif checked:
+            bg = QColor("#2e2e2e")
+            border = QColor("#6a6a6a")
+        else:
+            bg = QColor("#2a2a2a")
+            border = QColor("#404040")
+
+        pen_w = 1.0
+
+        painter.setPen(QPen(border, pen_w))
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(rf, radius, radius)
+
+        if checked and not indeterminate:
+            tick = QColor("#b0b0b0" if enabled else "#707070")
+            painter.setPen(QPen(tick, 1.65))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            cx = rf.center().x()
+            cy = rf.center().y()
+            path = QPainterPath()
+            path.moveTo(cx - 3.2, cy - 0.2)
+            path.lineTo(cx - 0.9, cy + 2.3)
+            path.lineTo(cx + 3.4, cy - 2.7)
+            painter.drawPath(path)
+        elif indeterminate:
+            dash = QColor("#909090" if enabled else "#606060")
+            painter.setPen(QPen(dash, 1.5))
+            iy = int(round(rf.center().y()))
+            painter.drawLine(int(rf.left() + 3), iy, int(rf.right() - 3), iy)
+
+        painter.restore()
 
 
 class TagCheckTreeWidget(QTreeWidget):

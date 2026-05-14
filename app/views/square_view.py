@@ -201,7 +201,7 @@ class SquareGridView(BaseImageView):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Always-on avoids viewport-width oscillation from scrollbar show/hide.
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         self._content = QWidget()
         self._grid = QGridLayout(self._content)

@@ -8,6 +8,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication
 
+from app.ui.qt_chrome import install_transient_scroll_style
 from app.window import MainWindow
 
 
@@ -32,6 +33,7 @@ def main() -> None:
     else:
         ui.setPointSize(13)
     app.setFont(ui)
+    install_transient_scroll_style(app)
 
     win = MainWindow()
     win.show()

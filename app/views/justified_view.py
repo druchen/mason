@@ -219,7 +219,7 @@ class JustifiedView(BaseImageView):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Keep viewport width stable; AsNeeded can oscillate and trigger endless rebuild on Windows.
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._outer = QWidget()
         self._outer_lay = QVBoxLayout(self._outer)
         om = OUTER_MARGIN

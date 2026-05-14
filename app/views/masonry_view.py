@@ -165,7 +165,7 @@ class MasonryView(BaseImageView):
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         # Keep viewport width stable; AsNeeded can oscillate and trigger endless reflow on Windows.
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._content = QWidget()
         self._row = QHBoxLayout(self._content)
         sm = SIDE_MARGIN_BASE + SELECTION_SIDE_INSET

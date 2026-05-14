@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import QPoint, QMimeData, Qt, QTimer
+from PySide6.QtCore import QByteArray, QPoint, QMimeData, Qt, QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QMainWindow,
@@ -35,6 +36,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._did_apply_initial_splitters = False
+        self._splitter_reapply_done = False
+        self._splitter_reapply_attempts = 0
+        self._applying_splitter_sizes = False
         self.setWindowTitle("Mason")
         self.resize(1280, 800)
 
@@ -80,14 +84,17 @@ class MainWindow(QMainWindow):
         start_mode = str(self._settings.get("layout_mode") or "square")
         if self._locked_mode:
             start_mode = self._locked_mode
+        self._splitters_layout_mode = start_mode
         self._toolbar.set_mode(start_mode)
+        # Apply saved thumbnail size before switching layout so new views see the correct _thumb_size.
+        thumb_px = int(self._settings.get("thumbnail_size") or 128)
+        self._info.set_thumbnail_size(thumb_px)
+        self._preview.apply_prefs(thumb_px)
         self._preview.set_layout_mode(start_mode)
         self._preview.set_sort(
             str(self._settings.get("sort_by") or "name"),
             bool(self._settings.get("sort_ascending", True)),
         )
-        self._info.set_thumbnail_size(int(self._settings.get("thumbnail_size") or 128))
-        self._preview.apply_prefs(int(self._settings.get("thumbnail_size") or 128))
 
         self._folder_panel.select_path(self._folder)
         self._preview.set_import_drop_folder(self._folder)
@@ -112,34 +119,177 @@ class MainWindow(QMainWindow):
         if self.width() < 80 or self.height() < 80:
             return
         self._did_apply_initial_splitters = True
-        self._apply_splitter_sizes()
+        self._apply_splitter_sizes(self._splitters_layout_mode)
+        # First pass can run before Qt has finished laying out children; reapply once on the event loop.
+        QTimer.singleShot(0, self._reapply_splitters_once)
+
+    def _reapply_splitters_once(self) -> None:
+        if self._splitter_reapply_done:
+            return
+        if self.width() < 80 or self.height() < 80:
+            self._splitter_reapply_attempts += 1
+            if self._splitter_reapply_attempts < 60:
+                QTimer.singleShot(50, self._reapply_splitters_once)
+            else:
+                self._splitter_reapply_done = True
+            return
+        self._splitter_reapply_done = True
+        self._apply_splitter_sizes(self._splitters_layout_mode)
 
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
 
-    def _apply_splitter_sizes(self) -> None:
-        total_w = self._split_main.width()
-        sm = self._settings.get("splitter_main")
-        if isinstance(sm, list) and len(sm) == 3 and sum(sm) > 0:
-            self._split_main.setSizes([int(sm[0]), int(sm[1]), int(sm[2])])
-        else:
-            left_w = max(200, int(total_w * 0.18))
-            right_w = max(220, int(total_w * 0.20))
-            self._split_main.setSizes([left_w, max(200, total_w - left_w - right_w), right_w])
+    @staticmethod
+    def _splitter_size_lists_valid(m: list[int], l: list[int], r: list[int]) -> bool:
+        return (
+            len(m) == 3
+            and all(x > 0 for x in m)
+            and sum(m) > 0
+            and len(l) == 2
+            and all(x > 0 for x in l)
+            and sum(l) > 0
+            and len(r) == 2
+            and all(x > 0 for x in r)
+            and sum(r) > 0
+        )
 
-        total_h = self._split_left.height()
-        sl = self._settings.get("splitter_left")
-        if isinstance(sl, list) and len(sl) == 2 and sum(sl) > 0:
-            self._split_left.setSizes([int(sl[0]), int(sl[1])])
-        else:
-            self._split_left.setSizes([max(300, int(total_h * 0.65)), max(120, int(total_h * 0.35))])
+    @staticmethod
+    def _fit_splitter_sizes(sizes: list[int], total: int, floor_each: int = 48) -> list[int]:
+        total = max(1, int(total))
+        if len(sizes) < 1:
+            return sizes
+        ssum = sum(sizes)
+        if ssum <= 0:
+            return sizes
+        out = [max(floor_each, int(round(s * total / ssum))) for s in sizes]
+        diff = total - sum(out)
+        guard = 0
+        while diff != 0 and guard < 10000:
+            guard += 1
+            i = max(range(len(out)), key=lambda j: out[j])
+            step = 1 if diff > 0 else -1
+            if out[i] + step < floor_each:
+                break
+            out[i] += step
+            diff -= step
+        return out
 
-        sr = self._settings.get("splitter_right")
-        if isinstance(sr, list) and len(sr) == 2 and sum(sr) > 0:
-            self._split_right.setSizes([int(sr[0]), int(sr[1])])
-        else:
-            self._split_right.setSizes([max(200, int(total_h * 0.55)), max(120, int(total_h * 0.45))])
+    def _try_restore_splitters_from_qt_state(self, entry: dict[str, Any]) -> bool:
+        keys = ("qt_main", "qt_left", "qt_right")
+        splitters = (self._split_main, self._split_left, self._split_right)
+        backup = [bytes(sp.saveState()) for sp in splitters]
+        blobs: list[QByteArray] = []
+        for k in keys:
+            raw = entry.get(k)
+            if not isinstance(raw, str) or not raw:
+                return False
+            try:
+                blobs.append(QByteArray(bytes.fromhex(raw)))
+            except ValueError:
+                return False
+        ok = all(sp.restoreState(ba) for sp, ba in zip(splitters, blobs))
+        if not ok:
+            for sp, b in zip(splitters, backup):
+                sp.restoreState(QByteArray(b))
+        return ok
+
+    def _splitter_lists_for_mode(self, mode: str) -> tuple[list[int] | None, list[int] | None, list[int] | None]:
+        sbm = self._settings.get("splitters_by_mode")
+        if not isinstance(sbm, dict):
+            return None, None, None
+        entry = sbm.get(mode)
+        if not isinstance(entry, dict):
+            return None, None, None
+        sm = entry.get("splitter_main")
+        sl = entry.get("splitter_left")
+        sr = entry.get("splitter_right")
+        if (
+            isinstance(sm, list)
+            and len(sm) == 3
+            and sum(sm) > 0
+            and isinstance(sl, list)
+            and len(sl) == 2
+            and sum(sl) > 0
+            and isinstance(sr, list)
+            and len(sr) == 2
+            and sum(sr) > 0
+        ):
+            return [int(sm[0]), int(sm[1]), int(sm[2])], [int(sl[0]), int(sl[1])], [int(sr[0]), int(sr[1])]
+        return None, None, None
+
+    def _store_splitters_for_mode(self, mode: str) -> None:
+        m = [int(x) for x in self._split_main.sizes()]
+        l = [int(x) for x in self._split_left.sizes()]
+        r = [int(x) for x in self._split_right.sizes()]
+        if not self._splitter_size_lists_valid(m, l, r):
+            return
+        raw = self._settings.get("splitters_by_mode")
+        sbm: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+        sbm[mode] = {
+            "splitter_main": m,
+            "splitter_left": l,
+            "splitter_right": r,
+            "qt_main": bytes(self._split_main.saveState()).hex(),
+            "qt_left": bytes(self._split_left.saveState()).hex(),
+            "qt_right": bytes(self._split_right.saveState()).hex(),
+        }
+        self._settings["splitters_by_mode"] = sbm
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        if self._applying_splitter_sizes:
+            return
+        self._store_splitters_for_mode(self._splitters_layout_mode)
+
+    def _apply_splitter_sizes(self, mode: str | None = None) -> None:
+        use_mode = mode if mode is not None else self._splitters_layout_mode
+        sm, sl, sr = self._splitter_lists_for_mode(use_mode)
+        entry: dict[str, Any] | None = None
+        sbm = self._settings.get("splitters_by_mode")
+        if isinstance(sbm, dict):
+            raw_e = sbm.get(use_mode)
+            if isinstance(raw_e, dict):
+                entry = raw_e
+
+        splitters = (self._split_main, self._split_left, self._split_right)
+        self._applying_splitter_sizes = True
+        for sp in splitters:
+            sp.blockSignals(True)
+        try:
+            total_w = max(1, self._split_main.width())
+            total_h_l = max(1, self._split_left.height())
+            total_h_r = max(1, self._split_right.height())
+
+            restored = False
+            if (
+                entry is not None
+                and self._split_main.width() > 160
+                and self._split_left.height() > 100
+                and self._split_right.height() > 100
+            ):
+                restored = self._try_restore_splitters_from_qt_state(entry)
+
+            if not restored and sm is not None and sl is not None and sr is not None:
+                main_fit = self._fit_splitter_sizes(sm, total_w, floor_each=120)
+                left_fit = self._fit_splitter_sizes(sl, total_h_l, floor_each=80)
+                right_fit = self._fit_splitter_sizes(sr, total_h_r, floor_each=80)
+                self._split_main.setSizes(main_fit)
+                self._split_left.setSizes(left_fit)
+                self._split_right.setSizes(right_fit)
+            elif not restored:
+                left_w = max(200, int(total_w * 0.18))
+                right_w = max(220, int(total_w * 0.20))
+                self._split_main.setSizes([left_w, max(200, total_w - left_w - right_w), right_w])
+                self._split_left.setSizes(
+                    [max(300, int(total_h_l * 0.65)), max(120, int(total_h_l * 0.35))]
+                )
+                self._split_right.setSizes(
+                    [max(200, int(total_h_r * 0.55)), max(120, int(total_h_r * 0.45))]
+                )
+        finally:
+            for sp in splitters:
+                sp.blockSignals(False)
+            self._applying_splitter_sizes = False
 
     def _setup_layout(self) -> None:
         central = QWidget()
@@ -186,6 +336,82 @@ class MainWindow(QMainWindow):
             }
             QToolButton:checked { background-color: #555; }
             QSplitter::handle { background: #444; }
+
+            QTabWidget#mason_panel_tabs::pane {
+                border: none;
+                background: transparent;
+                padding: 8px 0 0 0;
+                top: 0px;
+            }
+            QTabBar::tab {
+                background: #1f1f1f;
+                color: #d8d8d8;
+                border: 1px solid #404040;
+                border-top-left-radius: 3px;
+                border-top-right-radius: 3px;
+                padding: 5px 12px;
+                margin-right: 2px;
+                min-height: 1.2em;
+            }
+            QTabBar::tab:selected {
+                background: #2b2b2b;
+                border-top: 1px solid #666;
+                border-left: 1px solid #666;
+                border-right: 1px solid #666;
+                border-bottom: none;
+                border-top-left-radius: 3px;
+                border-top-right-radius: 3px;
+                margin-bottom: 0;
+                padding: 5px 12px;
+                color: #e0e0e0;
+            }
+            QTabBar::tab:hover:!selected { background: #2a2a2a; }
+
+            QScrollBar:vertical {
+                border: none;
+                background: transparent;
+                width: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #5a5a5a;
+                border-radius: 4px;
+                min-height: 28px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover { background: #707070; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: transparent;
+                height: 0px;
+                width: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+
+            QScrollBar:horizontal {
+                border: none;
+                background: transparent;
+                height: 10px;
+                margin: 0;
+            }
+            QScrollBar::handle:horizontal {
+                background: #5a5a5a;
+                border-radius: 4px;
+                min-width: 28px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #707070; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: transparent;
+                height: 0px;
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: transparent;
+            }
             """
         )
 
@@ -213,6 +439,10 @@ class MainWindow(QMainWindow):
         self._preview.open_in_photoshop_requested.connect(self._open_in_photoshop)
         self._toolbar.settings_clicked.connect(self._on_settings)
         self._preview.set_import_drop_handler(self._handle_preview_import_drop)
+
+        self._split_main.splitterMoved.connect(self._on_splitter_moved)
+        self._split_left.splitterMoved.connect(self._on_splitter_moved)
+        self._split_right.splitterMoved.connect(self._on_splitter_moved)
 
     # ------------------------------------------------------------------
     # Folder / path management
@@ -321,8 +551,13 @@ class MainWindow(QMainWindow):
     def _on_layout_mode(self, mode: str) -> None:
         if self._locked_mode:
             mode = self._locked_mode
+        prev = self._splitters_layout_mode
+        if prev != mode:
+            self._store_splitters_for_mode(prev)
+        self._splitters_layout_mode = mode
         self._toolbar.set_mode(mode)
         self._preview.set_layout_mode(mode)
+        self._apply_splitter_sizes(mode)
 
     def _on_thumb_size(self, size: int) -> None:
         # Coalesce rapid slider ticks into one rebuild.
@@ -344,6 +579,8 @@ class MainWindow(QMainWindow):
             self._photoshop_exe,
             str(self._settings.get("drop_save_format") or "webp"),
             self,
+            current_folder=self._folder,
+            thumbnail_cache=self._thumb_cache,
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -519,6 +756,7 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _save_settings(self) -> None:
+        self._store_splitters_for_mode(self._splitters_layout_mode)
         g = self.geometry()
         settings_mod.save_settings({
             "last_folder": self._folder,
@@ -533,4 +771,5 @@ class MainWindow(QMainWindow):
             "splitter_main": self._split_main.sizes(),
             "splitter_left": self._split_left.sizes(),
             "splitter_right": self._split_right.sizes(),
+            "splitters_by_mode": self._settings.get("splitters_by_mode") or {},
         })

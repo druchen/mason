@@ -1,7 +1,7 @@
 """Fullscreen single-image viewer.
 
 Open with Space; close with Space or Escape.
-Navigate with Left / Right (or Up / Down) arrow keys.
+Navigate with Left / Right (or Up / Down) arrow keys, or the mouse wheel.
 Click anywhere to close.
 """
 
@@ -11,8 +11,8 @@ import io
 from pathlib import Path
 
 from PIL import Image as PILImage
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QImage, QKeyEvent, QPixmap
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QImage, QKeyEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
@@ -70,6 +70,9 @@ class FullscreenView(QWidget):
         lay.addWidget(self._img_label, stretch=1)
         lay.addWidget(self._info_label)
 
+        self._img_label.installEventFilter(self)
+        self._info_label.installEventFilter(self)
+
         self.showFullScreen()
         self._show_current()
         self.setFocus()
@@ -85,7 +88,6 @@ class FullscreenView(QWidget):
         name = Path(path).name
         self._info_label.setText(
             f"{name}    {self._idx + 1} / {len(self._paths)}"
-            "    |    Space / Esc to close"
         )
         self._load_image(path)
         self.navigation_changed.emit(path)
@@ -117,9 +119,34 @@ class FullscreenView(QWidget):
             self._idx = (self._idx - 1) % len(self._paths)
             self._show_current()
 
+    def _wheel_delta_y(self, event: QWheelEvent) -> int:
+        dy = event.pixelDelta().y()
+        if dy == 0:
+            dy = event.angleDelta().y()
+        return dy
+
+    def _handle_wheel(self, event: QWheelEvent) -> None:
+        if not self._paths:
+            return
+        dy = self._wheel_delta_y(event)
+        if dy > 0:
+            self._go_prev()
+        elif dy < 0:
+            self._go_next()
+
     # ------------------------------------------------------------------
     # Events
     # ------------------------------------------------------------------
+
+    def eventFilter(self, watched: QWidget, event: QEvent) -> bool:  # type: ignore[override]
+        if event.type() == QEvent.Type.Wheel and isinstance(event, QWheelEvent):
+            self._handle_wheel(event)
+            return True
+        return super().eventFilter(watched, event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # type: ignore[override]
+        self._handle_wheel(event)
+        event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()

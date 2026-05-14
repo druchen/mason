@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from app.core.sort_filter import TagMatchMode
 from app.core.tags_store import TagsStore
+from app.ui.mason_tab_widget import MasonTabWidget
 from app.ui.micro_icons import ICON_TOOLBUTTON_QSS, chevron_down_small_pm, no_sign_pm
 from app.ui.tag_check_tree import TagCheckTreeWidget
 
@@ -53,16 +54,11 @@ class FilterPanel(QWidget):
         super().__init__(parent)
         self._store = store
 
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-
-        lay.addWidget(QLabel("Filter"))
-
         row = QWidget()
         row_lay = QHBoxLayout(row)
         row_lay.setContentsMargins(0, 0, 0, 0)
         row_lay.setSpacing(3)
+        row_lay.addSpacing(4)
 
         self._frame = QFrame()
         self._frame.setObjectName("filterControlFrame")
@@ -80,7 +76,7 @@ class FilterPanel(QWidget):
         self._mode.addItem("Any Checked", "any")
         self._mode.currentIndexChanged.connect(lambda _: self.filter_changed.emit())
         self._mode.setMinimumWidth(56)
-        inner.addWidget(self._mode, 1)
+        inner.addWidget(self._mode, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self._arrow = _FilterArrowLabel(self._mode, self._frame)
         inner.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -98,7 +94,6 @@ class FilterPanel(QWidget):
 
         row_lay.addWidget(self._frame, 0)
         row_lay.addWidget(self._clear_btn, 0)
-        lay.addWidget(row)
 
         self._tree = TagCheckTreeWidget()
         self._tree.setColumnCount(1)
@@ -109,7 +104,20 @@ class FilterPanel(QWidget):
         self._tree.setDragEnabled(False)
         self._tree.setAcceptDrops(False)
         self._tree.itemChanged.connect(self._on_tree_item_changed)
-        lay.addWidget(self._tree)
+
+        filter_page = QWidget()
+        page_lay = QVBoxLayout(filter_page)
+        page_lay.setContentsMargins(0, 0, 0, 0)
+        page_lay.setSpacing(6)
+        page_lay.addWidget(row)
+        page_lay.addWidget(self._tree, stretch=1)
+
+        self._tabs = MasonTabWidget()
+        self._tabs.addTab(filter_page, "Filter")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._tabs, 1)
 
         self._configure_popup_width()
         self._sync_filter_row_height()
@@ -161,7 +169,8 @@ class FilterPanel(QWidget):
 
     def _sync_filter_row_height(self) -> None:
         fm = QFontMetrics(self.font())
-        h = max(17, min(21, fm.height() + 4))
+        # Match MainToolbar search / SortControlBar (toolbar.py, preview_panel).
+        h = max(22, min(28, fm.height() + 10))
         self._frame.setFixedHeight(h)
         self._arrow.setFixedSize(11, h)
         self._clear_btn.setFixedSize(max(20, h), h)

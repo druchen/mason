@@ -71,8 +71,7 @@ class MainToolbar(QFrame):
         modes_lay = QHBoxLayout(modes_host)
         modes_lay.setContentsMargins(0, 0, 0, 0)
         modes_lay.setSpacing(6)
-        fm = QFontMetrics(self.font())
-        mode_w = max(fm.horizontalAdvance(m.title()) for m in self.MODES) + 28
+        mode_w = 100
         btn_h = 40
         for mode in self.MODES:
             btn = QToolButton()

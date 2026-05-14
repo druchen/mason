@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QDir, QModelIndex, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileSystemModel,
@@ -15,11 +16,16 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QMessageBox,
-    QTabWidget,
     QTreeView,
     QVBoxLayout,
     QWidget,
 )
+
+from app.ui.mason_tab_widget import MasonTabWidget
+
+_PATH_FRAME_BORDER = "#383838"
+_PATH_FRAME_BORDER_HOVER = "#4a4a4a"
+_PATH_FRAME_BORDER_FOCUS = "#357abd"
 
 
 def _favorite_entry(path: str, name: str | None = None) -> dict[str, Any]:
@@ -39,8 +45,37 @@ class FolderPanel(QWidget):
         self._model.setRootPath("")
 
         self._path_edit = QLineEdit()
+        self._path_edit.setObjectName("folderPathEdit")
         self._path_edit.setPlaceholderText("Folder path — paste and press Enter")
+        self._path_edit.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._path_edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
         self._path_edit.returnPressed.connect(self._on_path_edit_return)
+        pal = self._path_edit.palette()
+        pal.setColor(QPalette.ColorGroup.All, QPalette.ColorRole.PlaceholderText, QColor(140, 140, 140))
+        self._path_edit.setPalette(pal)
+        self._path_edit.setStyleSheet(
+            f"""
+            QLineEdit#folderPathEdit {{
+                background-color: #1a1a1a;
+                border: 0.5px solid {_PATH_FRAME_BORDER};
+                border-radius: 4px;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                padding-left: 4px;
+                padding-right: 4px;
+                color: #ececec;
+                selection-background-color: #5ab4f5;
+                selection-color: #ffffff;
+            }}
+            QLineEdit#folderPathEdit:hover:!focus {{
+                border: 0.5px solid {_PATH_FRAME_BORDER_HOVER};
+            }}
+            QLineEdit#folderPathEdit:focus {{
+                border: 0.5px solid {_PATH_FRAME_BORDER_FOCUS};
+            }}
+            """
+        )
+        self._sync_path_edit_height()
 
         self._tree = QTreeView()
         self._tree.setModel(self._model)
@@ -72,14 +107,19 @@ class FolderPanel(QWidget):
         self._fav_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         self._fav_list.model().rowsMoved.connect(self._on_favorite_rows_moved)
 
-        self._tabs = QTabWidget()
+        self._tabs = MasonTabWidget()
         self._tabs.addTab(self._fav_list, "Favorite")
         self._tabs.addTab(self._folders_page, "Folders")
         self._tabs.setCurrentIndex(1)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self._tabs)
+        lay.addWidget(self._tabs, 1)
+
+    def _sync_path_edit_height(self) -> None:
+        fm = QFontMetrics(self.font())
+        h = max(22, min(28, fm.height() + 10))
+        self._path_edit.setFixedHeight(h)
 
     def _favorite_path_set(self) -> set[str]:
         return {str(e["path"]) for e in self._favorites if e.get("path")}
@@ -268,6 +308,7 @@ class FolderPanel(QWidget):
 
     def set_folder_path_display(self, path: str) -> None:
         self._path_edit.setText(path)
+        self._path_edit.home(False)
 
     def set_root_path(self, path: str) -> None:
         self._tree.setRootIndex(self._model.index(path))

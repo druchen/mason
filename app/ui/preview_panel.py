@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.core.sort_filter import SortKey
 from app.core.thumbnail_cache import ThumbnailCache
 from app.ui.drop_import import mime_looks_external_folder_import
+from app.ui.mason_tab_widget import TabBarGapDividerLine
 from app.ui.sort_control import SortControlBar
 from app.views.base_view import BaseImageView
 from app.views.filmstrip_view import FilmstripView
@@ -29,6 +30,42 @@ from app.views.masonry_view import MasonryView
 from app.views.square_view import SquareGridView
 
 _MODE_ORDER = ("masonry", "justified", "square", "filmstrip", "list")
+
+_PREVIEW_FAV_TAB_QSS = """
+QTabBar#preview_fav_tab_bar {
+    background: transparent;
+}
+QTabBar#preview_fav_tab_bar::tab {
+    min-width: 180px;
+    max-width: 180px;
+    min-height: 22px;
+    padding: 4px 8px 4px 14px;
+    margin-right: 2px;
+    margin-bottom: 0;
+    background-color: #1f1f1f;
+    color: #d8d8d8;
+    border: 1px solid #404040;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+}
+QTabBar#preview_fav_tab_bar::tab:selected {
+    margin-bottom: 0;
+    padding: 4px 8px 4px 14px;
+    background: qlineargradient(x1:0 y1:0, x2:1 y2:0,
+        stop:0 #5ab4f5, stop:0.032 #5ab4f5,
+        stop:0.033 #2b2b2b, stop:1 #2b2b2b);
+    color: #e0e0e0;
+    border-top: 1px solid #666;
+    border-left: 1px solid #666;
+    border-right: 1px solid #666;
+    border-bottom: none;
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+}
+QTabBar#preview_fav_tab_bar::tab:hover:!selected {
+    background-color: #2a2a2a;
+}
+"""
 
 
 class PreviewPanel(QWidget):
@@ -63,6 +100,8 @@ class PreviewPanel(QWidget):
         self._views: dict[str, BaseImageView | None] = {mode: None for mode in _MODE_ORDER}
 
         self._fav_tabs = QTabBar()
+        self._fav_tabs.setObjectName("preview_fav_tab_bar")
+        self._fav_tabs.setStyleSheet(_PREVIEW_FAV_TAB_QSS)
         self._fav_tabs.setMovable(True)
         self._fav_tabs.setExpanding(False)
         self._fav_tabs.setUsesScrollButtons(True)
@@ -70,17 +109,6 @@ class PreviewPanel(QWidget):
         self._fav_tabs.setElideMode(Qt.TextElideMode.ElideRight)
         self._fav_tabs.currentChanged.connect(self._on_fav_tab_changed)
         self._fav_tabs.tabMoved.connect(self._on_fav_tabs_moved)
-        self._fav_tabs.setStyleSheet(
-            """
-            QTabBar { background: transparent; }
-            QTabBar::tab {
-                min-height: 18px;
-                max-height: 22px;
-                padding: 1px 8px;
-                margin-right: 1px;
-            }
-            """
-        )
 
         self._sort_bar = SortControlBar()
         self._sort_bar.sort_changed.connect(self.sort_changed.emit)
@@ -91,13 +119,17 @@ class PreviewPanel(QWidget):
         hdr_lay = QHBoxLayout(self._header)
         hdr_lay.setContentsMargins(4, 1, 4, 1)
         hdr_lay.setSpacing(6)
-        hdr_lay.addWidget(self._fav_tabs, stretch=1)
-        hdr_lay.addWidget(self._sort_bar, stretch=0)
+        hdr_lay.addWidget(self._fav_tabs, stretch=1, alignment=Qt.AlignmentFlag.AlignVCenter)
+        hdr_lay.addWidget(self._sort_bar, stretch=0, alignment=Qt.AlignmentFlag.AlignVCenter)
+
+        self._fav_tab_divider = TabBarGapDividerLine(self._fav_tabs, self)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self._header, 0)
+        lay.addWidget(self._fav_tab_divider, 0)
+        lay.addSpacing(8)
         lay.addWidget(self._stack, stretch=1)
 
         self._mode = "square"
@@ -145,10 +177,12 @@ class PreviewPanel(QWidget):
 
     def _sync_header_height(self) -> None:
         fm = QFontMetrics(self.font())
-        h = max(18, min(22, fm.height() + 4))
+        h = max(28, min(34, fm.height() + 18))
         self._header.setFixedHeight(h)
         self._fav_tabs.setFixedHeight(h)
-        self._sort_bar.set_field_height(h)
+        # Match MainToolbar search field height (toolbar.py _sync_search_height).
+        sort_h = max(22, min(28, fm.height() + 10))
+        self._sort_bar.set_field_height(sort_h)
 
     def _parse_favorites_entries(self, data: object) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -203,6 +237,7 @@ class PreviewPanel(QWidget):
         finally:
             self._fav_tabs.blockSignals(False)
             self._syncing_fav_tabs = False
+            self._fav_tab_divider.update()
 
     def sync_favorite_tab_for_path(self, path: str) -> None:
         try:

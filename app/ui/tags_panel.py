@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QInputDialog,
-    QLabel,
     QMenu,
     QMessageBox,
     QTreeWidgetItem,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.tags_store import TagsStore
+from app.ui.mason_tab_widget import MasonTabWidget
 from app.ui.tag_check_tree import TagCheckTreeWidget
 
 
@@ -31,11 +31,6 @@ class TagsPanel(QWidget):
         self._store = store
         self._current_image: str | None = None
         self._tree_reload_active = False
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        lay.addWidget(QLabel("Tags"))
 
         self._tree = TagCheckTreeWidget()
         self._tree.setColumnCount(1)
@@ -53,7 +48,13 @@ class TagsPanel(QWidget):
         self._tree.reordered.connect(self._on_tree_reordered)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.customContextMenuRequested.connect(self._show_context_menu)
-        lay.addWidget(self._tree)
+
+        self._tabs = MasonTabWidget()
+        self._tabs.addTab(self._tree, "Tags")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._tabs, 1)
 
         self._reload_tree()
 

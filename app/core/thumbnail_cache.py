@@ -1,4 +1,12 @@
-"""Background thumbnail generation with disk cache (WebP format)."""
+"""Background thumbnail generation with disk cache (WebP format).
+
+Thumbnail tiers (shared across layouts, keyed by path + mtime + tier):
+
+  * **512 px** — requests with longest-side hint ≤ 512 (grids, strip tiles, list icons, …).
+  * **1024 px** — requests > 512 and ≤ 1024; one WebP derivative on disk.
+  * **Full resolution** — requests > 1024: decode the original file (no WebP disk cache;
+    session RAM cache only via the usual ``_ready_images`` key).
+"""
 
 from __future__ import annotations
 
@@ -13,16 +21,19 @@ from PySide6.QtGui import QImage, QPixmap
 
 from app.core.settings import app_data_dir
 
-_THUMB_BUCKETS = (128, 256, 512, 1024, 2048, 4096)
+_THUMB_TIER_SMALL = 512
+_THUMB_TIER_LARGE = 1024
+_TIER_ORIGINAL = 0  # sentinel: load full image, no downscaled WebP cache
 
 
-def _bucket_dim(max_dim: int) -> int:
-    """Quantize requested size into small/medium/large buckets."""
-    d = max(48, int(max_dim))
-    for b in _THUMB_BUCKETS:
-        if d <= b:
-            return b
-    return _THUMB_BUCKETS[-1]
+def thumbnail_tier_pixels(requested: int) -> int:
+    """Map requested decode hint to 512, 1024, or 0 (full/original)."""
+    r = max(48, int(requested))
+    if r <= _THUMB_TIER_SMALL:
+        return _THUMB_TIER_SMALL
+    if r <= _THUMB_TIER_LARGE:
+        return _THUMB_TIER_LARGE
+    return _TIER_ORIGINAL
 
 
 def thumbnail_payload_to_pixmap(obj: object) -> QPixmap | None:
@@ -69,14 +80,12 @@ class _ThumbWorker(QRunnable):
         max_dim: int,
         cache_dir: Path,
         owner: "ThumbnailCache",
-        use_cache: bool = True,
     ) -> None:
         super().__init__()
         self._path = path
         self._max_dim = max_dim
         self._cache_dir = cache_dir
         self._owner = owner
-        self._use_cache = use_cache
 
     def run(self) -> None:
         path = self._path
@@ -85,15 +94,38 @@ class _ThumbWorker(QRunnable):
             st = os.stat(path)
             mtime = st.st_mtime
         except OSError:
-            self._owner._emit_failed(path)
+            self._owner._emit_failed(path, max_dim)
             return
 
         key = _cache_key(path, mtime, max_dim)
+
+        if max_dim == _TIER_ORIGINAL:
+            qimg: QImage | None = None
+            try:
+                with Image.open(path) as im:
+                    im = im.copy()
+                    try:
+                        from app.core.image_cache import store_dims
+                        store_dims(path, mtime, im.width, im.height)
+                    except Exception:
+                        pass
+                    if im.mode not in ("RGB", "RGBA"):
+                        im = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
+                    qimg = _pil_to_qimage(im)
+            except Exception:
+                self._owner._emit_failed(path, max_dim)
+                return
+            if qimg is None or qimg.isNull():
+                self._owner._emit_failed(path, max_dim)
+                return
+            self._owner._emit_ready(path, qimg, key, max_dim)
+            return
+
         cache_file = self._cache_dir / f"{key}.webp"
-        qimg: QImage | None = None
+        qimg = None
 
         # Try loading from WebP cache
-        if self._use_cache and cache_file.is_file():
+        if cache_file.is_file():
             try:
                 with Image.open(cache_file) as cached:
                     cached.load()
@@ -119,21 +151,20 @@ class _ThumbWorker(QRunnable):
                     # Save as WebP (better compression than JPEG, lossless option)
                     buf = io.BytesIO()
                     im.convert("RGB").save(buf, format="WEBP", quality=85, method=4)
-                    if self._use_cache:
-                        self._cache_dir.mkdir(parents=True, exist_ok=True)
-                        try:
-                            with open(cache_file, "wb") as f:
-                                f.write(buf.getvalue())
-                        except OSError:
-                            pass
+                    self._cache_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        with open(cache_file, "wb") as f:
+                            f.write(buf.getvalue())
+                    except OSError:
+                        pass
             except Exception:
-                self._owner._emit_failed(path)
+                self._owner._emit_failed(path, max_dim)
                 return
 
         if qimg is None or qimg.isNull():
-            self._owner._emit_failed(path)
+            self._owner._emit_failed(path, max_dim)
             return
-        self._owner._emit_ready(path, qimg, key)
+        self._owner._emit_ready(path, qimg, key, max_dim)
 
 
 class ThumbnailCache(QObject):
@@ -148,23 +179,11 @@ class ThumbnailCache(QObject):
         self._pool.setMaxThreadCount(4)
         self._cache_dir = app_data_dir() / "thumbnails"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._pending: set[str] = set()
+        self._pending: set[tuple[str, int]] = set()
         self._ready_images: dict[str, QImage] = {}
-        self._disabled = os.environ.get("MASON_DISABLE_THUMBNAILS", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        self._use_original_images = os.environ.get("MASON_USE_ORIGINAL_IMAGES", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
 
-    def _emit_ready(self, path: str, image: QImage, key: str | None = None) -> None:
-        self._pending.discard(path)
+    def _emit_ready(self, path: str, image: QImage, key: str | None, tier_dim: int) -> None:
+        self._pending.discard((path, tier_dim))
         if key:
             # Keep a small hot cache in memory so repeated mode switches/resizes
             # don't spin workers for thumbnails we already decoded this session.
@@ -174,8 +193,8 @@ class ThumbnailCache(QObject):
         except RuntimeError:
             pass
 
-    def _emit_failed(self, path: str) -> None:
-        self._pending.discard(path)
+    def _emit_failed(self, path: str, tier_dim: int) -> None:
+        self._pending.discard((path, tier_dim))
         try:
             self.thumbnail_failed.emit(path)
         except RuntimeError:
@@ -184,30 +203,39 @@ class ThumbnailCache(QObject):
     @Slot(str, int)
     def request(self, path: str, max_dim: int) -> None:
         """Queue thumbnail generation. Emits thumbnail_ready when done."""
-        if self._disabled:
-            return
-        max_dim = _bucket_dim(max_dim)
+        tier = thumbnail_tier_pixels(max_dim)
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
             return
-        key = _cache_key(path, mtime, max_dim)
+        key = _cache_key(path, mtime, tier)
         ready = self._ready_images.get(key)
         if ready is not None and not ready.isNull():
-            self._emit_ready(path, ready, key)
+            self._emit_ready(path, ready, key, tier)
             return
-        if path in self._pending:
+        if (path, tier) in self._pending:
             return
-        self._pending.add(path)
+        self._pending.add((path, tier))
         self._pool.start(
             _ThumbWorker(
                 path,
-                max_dim,
+                tier,
                 self._cache_dir,
                 self,
-                use_cache=not self._use_original_images,
             )
         )
 
     def clear_pending(self) -> None:
         self._pending.clear()
+
+    def purge_disk_and_memory(self) -> None:
+        """Delete all WebP files under the thumbnail cache dir and clear in-memory decoded images."""
+        self._pending.clear()
+        self._ready_images.clear()
+        if self._cache_dir.is_dir():
+            for f in self._cache_dir.iterdir():
+                if f.is_file():
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass

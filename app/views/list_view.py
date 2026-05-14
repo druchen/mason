@@ -8,19 +8,42 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QEvent, QSize, QTimer
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtCore import QPoint, QRect, Qt, QEvent, QSize, QTimer
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QMouseEvent, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QListWidget,
     QListWidgetItem,
+    QStyledItemDelegate,
+    QStyle,
+    QStyleOptionViewItem,
     QVBoxLayout,
 )
 
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+
+# Left inset for each row (stylesheet padding-left; shifts icon + text together).
+_LIST_VIEWPORT_LEFT_MARGIN = 12
+_LIST_ICON_TEXT_GAP = 14
+
+
+class _ListRowDelegate(QStyledItemDelegate):
+    """Strip inner focus ring / nested text highlight so selection reads as one blue outline."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:  # type: ignore[override]
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+        if opt.state & QStyle.StateFlag.State_Selected:
+            opt.palette.setColor(QPalette.ColorRole.Highlight, QColor(90, 180, 245, 51))
+            opt.palette.setColor(
+                QPalette.ColorRole.HighlightedText,
+                opt.palette.color(QPalette.ColorRole.Text),
+            )
+        super().paint(painter, opt, index)
 
 
 class ListView(BaseImageView):
@@ -36,7 +59,7 @@ class ListView(BaseImageView):
         self._list.setSpacing(2)
         self._list.setUniformItemSizes(False)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -56,6 +79,7 @@ class ListView(BaseImageView):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._list)
+        self._list.setItemDelegate(_ListRowDelegate(self._list))
         self._apply_styles()
 
     def _list_icon_pixel_size(self) -> int:
@@ -80,9 +104,22 @@ class ListView(BaseImageView):
         painter.end()
         return out
 
+    def _list_icon_pixmap(self, pm: QPixmap) -> QPixmap:
+        """Square letterboxed thumb plus trailing gap so the filename sits farther from the image."""
+        side = self._list_icon_pixel_size()
+        gap = _LIST_ICON_TEXT_GAP
+        inner = self._fit_pixmap_to_square(pm, side)
+        if gap <= 0:
+            return inner
+        out = QPixmap(side + gap, side)
+        out.fill(QColor("#3c3c3c"))
+        p = QPainter(out)
+        p.drawPixmap(0, 0, inner)
+        p.end()
+        return out
+
     def _list_row_height_px(self) -> int:
         icon_sz = self._list_icon_pixel_size()
-        # Stylesheet item padding (2*2) + border (2*2) + small breathing room
         chrome = 12
         chrome += QFontMetrics(self._list.font()).height() + 4
         return icon_sz + chrome
@@ -105,7 +142,6 @@ class ListView(BaseImageView):
         self._list.doItemsLayout()
 
     def _schedule_list_layout_sync(self) -> None:
-        """Coalesce size-hint updates during live resize (text + icons are heavy on Windows)."""
         self._list_layout_timer.start(55)
 
     def _flush_list_layout_sync(self) -> None:
@@ -153,15 +189,14 @@ class ListView(BaseImageView):
 
     def _list_drag_preview(self, anchor: QListWidgetItem) -> QPixmap | None:
         ic = anchor.icon()
+        side = self._list_icon_pixel_size()
         for sz in ic.availableSizes():
             pm = ic.pixmap(sz)
             if not pm.isNull():
+                if pm.width() > side:
+                    return pm.copy(QRect(0, 0, side, pm.height()))
                 return pm
         return None
-
-    # ------------------------------------------------------------------
-    # Event filter
-    # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self._list:
@@ -210,10 +245,6 @@ class ListView(BaseImageView):
                 self._schedule_list_layout_sync()
         return super().eventFilter(obj, event)
 
-    # ------------------------------------------------------------------
-    # Selection
-    # ------------------------------------------------------------------
-
     def _on_selection_changed(self) -> None:
         items = self._list.selectedItems()
         if not items:
@@ -231,10 +262,6 @@ class ListView(BaseImageView):
                 result.append(p)
         return result
 
-    # ------------------------------------------------------------------
-    # Thumbnail delivery (O(1) lookup)
-    # ------------------------------------------------------------------
-
     def apply_thumbnail(self, path: str, payload: object) -> None:
         pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:
@@ -242,15 +269,13 @@ class ListView(BaseImageView):
         self._pixmaps[path] = pm
         item = self._path_to_item.get(path)
         if item:
-            side = self._list_icon_pixel_size()
-            item.setIcon(QIcon(self._fit_pixmap_to_square(pm, side)))
+            item.setIcon(QIcon(self._list_icon_pixmap(pm)))
 
     def _refresh_all_list_icons(self) -> None:
-        side = self._list_icon_pixel_size()
         for path, item in self._path_to_item.items():
             pm = self._pixmaps.get(path)
             if pm is not None and not pm.isNull():
-                item.setIcon(QIcon(self._fit_pixmap_to_square(pm, side)))
+                item.setIcon(QIcon(self._list_icon_pixmap(pm)))
 
     def _request_visible_icons(self) -> None:
         icon_sz = self._list_icon_pixel_size()
@@ -272,10 +297,6 @@ class ListView(BaseImageView):
             self.setUpdatesEnabled(True)
             self.update()
 
-    # ------------------------------------------------------------------
-    # BaseImageView interface
-    # ------------------------------------------------------------------
-
     def set_paths(self, paths: list[str]) -> None:
         if paths == self._paths:
             return
@@ -283,7 +304,7 @@ class ListView(BaseImageView):
         self._path_to_item.clear()
         self._list.clear()
         icon_sz = self._list_icon_pixel_size()
-        self._list.setIconSize(QSize(icon_sz, icon_sz))
+        self._list.setIconSize(QSize(icon_sz + _LIST_ICON_TEXT_GAP, icon_sz))
         for p in paths:
             item = QListWidgetItem(Path(p).name)
             item.setData(Qt.ItemDataRole.UserRole, p)
@@ -292,7 +313,7 @@ class ListView(BaseImageView):
             self._path_to_item[p] = item
             cached = self._pixmaps.get(p)
             if cached is not None and not cached.isNull():
-                item.setIcon(QIcon(self._fit_pixmap_to_square(cached, icon_sz)))
+                item.setIcon(QIcon(self._list_icon_pixmap(cached)))
         self._request_visible_icons()
         self._apply_styles()
         QTimer.singleShot(0, self._flush_list_layout_sync)
@@ -300,7 +321,7 @@ class ListView(BaseImageView):
     def set_thumbnail_size(self, size: int, *, reflow: bool = True) -> None:
         super().set_thumbnail_size(size, reflow=reflow)
         icon_sz = self._list_icon_pixel_size()
-        self._list.setIconSize(QSize(icon_sz, icon_sz))
+        self._list.setIconSize(QSize(icon_sz + _LIST_ICON_TEXT_GAP, icon_sz))
         if reflow:
             self._refresh_all_list_icons()
             self._request_visible_icons()
@@ -311,19 +332,25 @@ class ListView(BaseImageView):
         self._apply_styles()
 
     def _apply_styles(self) -> None:
+        m = int(_LIST_VIEWPORT_LEFT_MARGIN)
         self._list.setStyleSheet(
-            """
-            QListWidget { background: transparent; }
-            QListWidget::item {
+            f"""
+            QListWidget {{ background: transparent; }}
+            QListWidget::item {{
                 background: #3c3c3c;
                 border: 2px solid transparent;
                 border-radius: 2px;
-                padding: 2px;
-            }
-            QListWidget::item:selected {
+                outline: none;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                padding-right: 2px;
+                padding-left: {m}px;
+            }}
+            QListWidget::item:selected {{
                 background: rgba(90, 180, 245, 0.2);
                 border: 2px solid #5ab4f5;
-            }
+                outline: none;
+            }}
             """
         )
 

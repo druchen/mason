@@ -76,7 +76,7 @@ class SortControlBar(QWidget):
             self._combo.addItem(label, key)
         self._combo.currentIndexChanged.connect(self._emit_sort)
         self._combo.setMinimumWidth(64)
-        inner.addWidget(self._combo, 1)
+        inner.addWidget(self._combo, 1, Qt.AlignmentFlag.AlignVCenter)
 
         self._arrow = _SortArrowLabel(self._combo, self._frame)
         inner.addWidget(self._arrow, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -92,11 +92,11 @@ class SortControlBar(QWidget):
         self._asc.setStyleSheet(ICON_TOOLBUTTON_QSS)
         self._asc.clicked.connect(self._on_asc_clicked)
 
-        root.addWidget(self._frame, 0)
-        root.addWidget(self._asc, 0)
+        root.addWidget(self._frame, 0, Qt.AlignmentFlag.AlignVCenter)
+        root.addWidget(self._asc, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self._configure_popup_width()
-        self.set_field_height(max(17, min(21, QFontMetrics(self.font()).height() + 4)))
+        self.set_field_height(max(22, min(28, QFontMetrics(self.font()).height() + 10)))
         self._refresh_asc_icon()
 
     def set_field_height(self, h: int) -> None:
