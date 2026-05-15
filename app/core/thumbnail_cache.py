@@ -5,7 +5,7 @@ Thumbnail tiers (shared across layouts, keyed by path + mtime + tier):
   * **512 px** — requests with longest-side hint ≤ 512 (grids, strip tiles, list icons, …).
   * **1024 px** — requests > 512 and ≤ 1024; one WebP derivative on disk.
   * **Full resolution** — requests > 1024: decode the original file (no WebP disk cache;
-    session RAM cache only via the usual ``_ready_images`` key).
+    bounded LRU session RAM cache via ``_ready_images``).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+from collections import OrderedDict
 from pathlib import Path
 
 from PIL import Image
@@ -20,6 +21,9 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from PySide6.QtGui import QImage, QPixmap
 
 from app.core.settings import app_data_dir
+
+# Cap decoded QImages kept for instant re-request; evicted tiers reload from WebP on disk.
+_MAX_RAM_THUMB_ENTRIES = 512
 
 _THUMB_TIER_SMALL = 512
 _THUMB_TIER_LARGE = 1024
@@ -180,18 +184,26 @@ class ThumbnailCache(QObject):
         self._cache_dir = app_data_dir() / "thumbnails"
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._pending: set[tuple[str, int]] = set()
-        self._ready_images: dict[str, QImage] = {}
+        self._ready_images: OrderedDict[str, QImage] = OrderedDict()
 
     def cache_directory(self) -> Path:
         """Directory where WebP thumbnail cache files are stored."""
         return self._cache_dir
 
+    def _remember_ready_image(self, key: str, image: QImage) -> None:
+        """LRU store for decoded thumbnails; oldest entries evicted under memory pressure."""
+        od = self._ready_images
+        if key in od:
+            del od[key]
+        od[key] = image
+        while len(od) > _MAX_RAM_THUMB_ENTRIES:
+            od.popitem(last=False)
+
     def _emit_ready(self, path: str, image: QImage, key: str | None, tier_dim: int) -> None:
         self._pending.discard((path, tier_dim))
         if key:
-            # Keep a small hot cache in memory so repeated mode switches/resizes
-            # don't spin workers for thumbnails we already decoded this session.
-            self._ready_images[key] = image
+            # Bounded hot cache so scrolling huge folders does not retain every decode.
+            self._remember_ready_image(key, image)
         try:
             self.thumbnail_ready.emit(path, image)
         except RuntimeError:
@@ -215,6 +227,7 @@ class ThumbnailCache(QObject):
         key = _cache_key(path, mtime, tier)
         ready = self._ready_images.get(key)
         if ready is not None and not ready.isNull():
+            self._ready_images.move_to_end(key)
             self._emit_ready(path, ready, key, tier)
             return
         if (path, tier) in self._pending:

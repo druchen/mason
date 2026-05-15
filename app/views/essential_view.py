@@ -28,6 +28,7 @@ from app.views.letterbox_icons import (
     PREVIEW_SURFACE,
     fit_pixmap_letterbox_square,
     request_thumbnails_for_visible_list_items,
+    visible_item_paths_with_margin,
 )
 
 _GAP = 8
@@ -204,6 +205,15 @@ class EssentialView(BaseImageView):
         self._refresh_all_icons()
         QTimer.singleShot(0, self._request_visible_icons)
 
+    def _prune_pixmaps_not_in(self, keep: set[str]) -> None:
+        for path in list(self._pixmaps.keys()):
+            if path in keep:
+                continue
+            del self._pixmaps[path]
+            it = self._path_to_item.get(path)
+            if it is not None:
+                it.setIcon(QIcon())
+
     def _icon_for_path(self, path: str) -> QIcon:
         pm = self._pixmaps.get(path)
         if pm is None or pm.isNull():
@@ -216,7 +226,10 @@ class EssentialView(BaseImageView):
             item.setIcon(self._icon_for_path(path))
 
     def _request_visible_icons(self) -> None:
+        keep = visible_item_paths_with_margin(self._list, 320)
+        keep |= self._selected_paths
         request_thumbnails_for_visible_list_items(self._list, self._cell_px, self._thumb_cache)
+        self._prune_pixmaps_not_in(keep)
 
     def _finish_list_external_drag_gesture(self) -> None:
         """After QDrag.exec() (including cancel), reset view state so the next click is not Ctrl-add."""
@@ -391,7 +404,6 @@ class EssentialView(BaseImageView):
         for p in paths:
             item = QListWidgetItem("")
             item.setData(Qt.ItemDataRole.UserRole, p)
-            item.setToolTip(p)
             self._list.addItem(item)
             self._path_to_item[p] = item
 

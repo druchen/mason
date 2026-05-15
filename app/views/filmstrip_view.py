@@ -361,7 +361,6 @@ class FilmstripView(BaseImageView):
         for p in self._paths[lo:hi]:
             item = QListWidgetItem("")
             item.setData(Qt.ItemDataRole.UserRole, p)
-            item.setToolTip(p)
             item.setSizeHint(hint)
             self._strip_list.addItem(item)
             self._path_to_item[p] = item
@@ -369,8 +368,16 @@ class FilmstripView(BaseImageView):
         self._strip_list.setIconSize(QSize(cell, cell))
         self._sync_strip_list_selection()
         self._refresh_strip_icons()
+        self._prune_strip_pixmaps()
 
-    def _refresh_strip_icons(self) -> None:
+    def _prune_strip_pixmaps(self) -> None:
+        keep = set(self._path_to_item.keys()) | self._selected_paths
+        if self._selected_path:
+            keep.add(self._selected_path)
+        for path in list(self._pixmaps.keys()):
+            if path in keep:
+                continue
+            del self._pixmaps[path]
         for path, item in self._path_to_item.items():
             item.setIcon(self._icon_for_path(path))
 
@@ -570,6 +577,7 @@ class FilmstripView(BaseImageView):
     def _ensure_visible_thumb_requests(self) -> None:
         cell = max(48, self._outer_px() - _ITEM_CHROME)
         request_thumbnails_for_visible_list_items(self._strip_list, cell, self._thumb_cache)
+        self._prune_strip_pixmaps()
 
     def eventFilter(self, obj, ev) -> bool:  # type: ignore[override]
         if obj is self._strip_list:

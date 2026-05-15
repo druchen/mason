@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+from app.views.letterbox_icons import request_thumbnails_for_visible_list_items, visible_item_paths_with_margin
 from app.views.selection_overlay import NoFillSelectionDelegate
 
 # Left inset for each row (stylesheet padding-left; shifts icon + text together).
@@ -68,6 +69,15 @@ class ListView(BaseImageView):
         self._list.setItemDelegate(NoFillSelectionDelegate(self._list))
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         self._apply_styles()
+
+    def _prune_pixmaps_not_in(self, keep: set[str]) -> None:
+        for path in list(self._pixmaps.keys()):
+            if path in keep:
+                continue
+            del self._pixmaps[path]
+            it = self._path_to_item.get(path)
+            if it is not None:
+                it.setIcon(QIcon())
 
     def _list_icon_pixel_size(self) -> int:
         return max(48, min(512, self._thumbnail_size))
@@ -134,6 +144,7 @@ class ListView(BaseImageView):
     def _flush_list_layout_sync(self) -> None:
         self._list_layout_timer.stop()
         self._sync_list_item_size_hints()
+        QTimer.singleShot(0, self._request_visible_icons)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -306,23 +317,18 @@ class ListView(BaseImageView):
 
     def _request_visible_icons(self) -> None:
         icon_sz = self._list_icon_pixel_size()
-        vp = self._list.viewport()
-        vp_rect = vp.rect()
+        keep = visible_item_paths_with_margin(self._list, 400)
+        for it in self._list.selectedItems():
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, str):
+                keep.add(p)
         self.setUpdatesEnabled(False)
         try:
-            for i in range(self._list.count()):
-                item = self._list.item(i)
-                if item is None:
-                    continue
-                r = self._list.visualItemRect(item)
-                if not r.isValid() or not vp_rect.intersects(r):
-                    continue
-                p = item.data(Qt.ItemDataRole.UserRole)
-                if isinstance(p, str):
-                    self._thumb_cache.request(p, icon_sz)
+            request_thumbnails_for_visible_list_items(self._list, icon_sz, self._thumb_cache)
         finally:
             self.setUpdatesEnabled(True)
             self.update()
+        self._prune_pixmaps_not_in(keep)
 
     def set_paths(self, paths: list[str]) -> None:
         if paths == self._paths:
@@ -335,7 +341,6 @@ class ListView(BaseImageView):
         for p in paths:
             item = QListWidgetItem(Path(p).name)
             item.setData(Qt.ItemDataRole.UserRole, p)
-            item.setToolTip(p)
             self._list.addItem(item)
             self._path_to_item[p] = item
             cached = self._pixmaps.get(p)

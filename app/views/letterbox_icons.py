@@ -54,3 +54,26 @@ def request_thumbnails_for_visible_list_items(
         p = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(p, str):
             thumb_cache.request(p, req)
+
+
+def item_paths_intersecting_rect(list_widget: QListWidget, rect: QRect) -> set[str]:
+    """Paths for items whose ``visualItemRect`` intersects ``rect`` (viewport coordinates)."""
+    out: set[str] = set()
+    for i in range(list_widget.count()):
+        item = list_widget.item(i)
+        if item is None:
+            continue
+        r = list_widget.visualItemRect(item)
+        if not r.isValid() or not rect.intersects(r):
+            continue
+        p = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(p, str):
+            out.add(p)
+    return out
+
+
+def visible_item_paths_with_margin(list_widget: QListWidget, margin_px: int = 256) -> set[str]:
+    """Paths near the viewport (strict visible plus ``margin_px`` pad) for pixmap retention."""
+    m = max(0, int(margin_px))
+    vp = list_widget.viewport()
+    return item_paths_intersecting_rect(list_widget, vp.rect().adjusted(-m, -m, m, m))
