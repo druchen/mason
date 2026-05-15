@@ -34,7 +34,7 @@ QTabBar#preview_fav_tab_bar {
     background: transparent;
 }
 QTabBar#preview_fav_tab_bar::tab {
-    min-width: 72px;
+    min-width: 180px;
     max-width: 220px;
     min-height: 22px;
     padding: 4px 8px 4px 14px;
@@ -144,7 +144,7 @@ class PreviewPanel(QWidget):
         lay.addWidget(self._stack, stretch=1)
 
         self._mode = "essential"
-        self.setMinimumWidth(0)
+        self.setMinimumWidth(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAcceptDrops(True)
 

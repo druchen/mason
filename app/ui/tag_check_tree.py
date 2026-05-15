@@ -54,6 +54,34 @@ QTreeWidget::item:hover:!selected {
 }
 """
 
+# Filter panel: no persistent row highlight; hover on any row; selection state ignored visually.
+_TAG_CHECK_TREE_QSS_FILTER = """
+QTreeWidget {
+    show-decoration-selected: 0;
+    outline: none;
+    background: transparent;
+    border: none;
+}
+QTreeWidget:focus {
+    outline: none;
+}
+QTreeWidget::item {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    border: none;
+    outline: none;
+}
+QTreeWidget::item:selected,
+QTreeWidget::item:selected:active {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+QTreeWidget::item:hover {
+    background-color: #3a3a3a;
+}
+"""
+
 # Square checkbox edge (logical px) for tag trees. Edit this to resize; used with Fusion-backed style.
 TAG_TREE_CHECKBOX_PX = 14
 
@@ -195,9 +223,9 @@ class TagCheckTreeWidget(QTreeWidget):
 
     reordered = Signal()
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, filter_panel: bool = False) -> None:
         super().__init__(parent)
-        self.setStyleSheet(_TAG_CHECK_TREE_QSS)
+        self.setStyleSheet(_TAG_CHECK_TREE_QSS_FILTER if filter_panel else _TAG_CHECK_TREE_QSS)
         # Windows "windowsvista"/"windows11" styles often ignore PM_ExclusiveIndicator* for view
         # checkboxes; Fusion honors them. Tree-only so the rest of the app stays native.
         base = QStyleFactory.create("Fusion") or QApplication.style()

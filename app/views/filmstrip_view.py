@@ -208,6 +208,16 @@ class FilmstripView(BaseImageView):
 
     # ------------------------------------------------------------------
 
+    def _clear_preview_selection(self) -> None:
+        if not self._selected_path and not self._selected_paths:
+            return
+        self._selected_path = None
+        self._selected_paths = set()
+        self._anchor_path = None
+        self._sync_strip_list_selection()
+        self._set_preview(QPixmap())
+        self.selection_changed.emit("")
+
     def _apply_strip_style(self) -> None:
         self._strip_list.setStyleSheet(
             f"""
@@ -367,7 +377,6 @@ class FilmstripView(BaseImageView):
         self._strip_list.setGridSize(QSize(outer, outer))
         self._strip_list.setIconSize(QSize(cell, cell))
         self._sync_strip_list_selection()
-        self._refresh_strip_icons()
         self._prune_strip_pixmaps()
 
     def _prune_strip_pixmaps(self) -> None:
@@ -378,8 +387,7 @@ class FilmstripView(BaseImageView):
             if path in keep:
                 continue
             del self._pixmaps[path]
-        for path, item in self._path_to_item.items():
-            item.setIcon(self._icon_for_path(path))
+        self._refresh_strip_icons()
 
     def _icon_for_path(self, path: str) -> QIcon:
         pm = self._pixmaps.get(path)
@@ -388,6 +396,10 @@ class FilmstripView(BaseImageView):
         cell = max(1, self._outer_px() - _ITEM_CHROME)
         sq = fit_pixmap_letterbox_square(pm, cell, self._tile_background)
         return QIcon(sq)
+
+    def _refresh_strip_icons(self) -> None:
+        for path, item in self._path_to_item.items():
+            item.setIcon(self._icon_for_path(path))
 
     def _sync_strip_list_selection(self) -> None:
         self._strip_list.blockSignals(True)
@@ -596,6 +608,11 @@ class FilmstripView(BaseImageView):
                         if sel:
                             self.delete_requested.emit(sel)
                         return True
+                    if ke.key() == Qt.Key.Key_Escape:
+                        if not self._selected_path and not self._selected_paths:
+                            return False
+                        self._clear_preview_selection()
+                        return True
                     if ke.key() in (Qt.Key.Key_Right, Qt.Key.Key_Down):
                         self._navigate(+1)
                         return True
@@ -645,6 +662,10 @@ class FilmstripView(BaseImageView):
             sel = self.selected_paths()
             if sel:
                 self.delete_requested.emit(sel)
+            return
+        if key == Qt.Key.Key_Escape:
+            if self._selected_path or self._selected_paths:
+                self._clear_preview_selection()
             return
         if key in (Qt.Key.Key_Right, Qt.Key.Key_Down):
             self._navigate(+1)

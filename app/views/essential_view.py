@@ -1,7 +1,8 @@
 """Essential layout: letterboxed thumbnails in a QListWidget (Icon mode).
 
-Column count (4–16) follows the global thumbnail slider (48–512). Grid metrics are derived
-from the list viewport width; leftover width is split evenly as left/right viewport margins.
+Column count (2–16) follows the global thumbnail slider (48–512). Grid metrics are derived
+from the list viewport width with a fixed left inset; tile width uses the remaining width,
+and any remainder after the grid becomes the right viewport margin.
 """
 from __future__ import annotations
 
@@ -33,11 +34,12 @@ from app.views.letterbox_icons import (
 
 _GAP = 8
 _VIEWPORT_VPAD = 8  # top/bottom only; horizontal inset is ml/mr from tile math
+_VIEWPORT_LPAD = 12  # fixed space from viewport left edge to first tile column
 _ITEM_CHROME = 12
 _SLIDER_LO = 48
 _SLIDER_HI = 512
 _COLS_WHEN_SLIDER_MIN = 16
-_COLS_WHEN_SLIDER_MAX = 4
+_COLS_WHEN_SLIDER_MAX = 2
 
 
 class EssentialView(BaseImageView):
@@ -110,11 +112,12 @@ class EssentialView(BaseImageView):
         vp_w = max(40, int(vp_w))
         if ncol < 1:
             return 4, 1, 1, 0, 0
-        outer = (vp_w - (ncol - 1) * _GAP) // ncol
+        ml = min(_VIEWPORT_LPAD, max(0, vp_w - 1))
+        vp_inner = max(1, vp_w - ml)
+        outer = (vp_inner - (ncol - 1) * _GAP) // ncol
         outer = max(_ITEM_CHROME + 1, outer)
         used = ncol * outer + (ncol - 1) * _GAP
-        slack = max(0, vp_w - used)
-        ml, mr = slack // 2, slack - slack // 2
+        mr = max(0, vp_w - ml - used)
         cell = max(1, outer - _ITEM_CHROME)
         return ncol, outer, cell, ml, mr
 
@@ -248,6 +251,11 @@ class EssentialView(BaseImageView):
             if et == QEvent.Type.KeyPress:
                 ke = event
                 if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Escape:
+                        if not self._list.selectedItems():
+                            return False
+                        self._list.clearSelection()
+                        return True
                     if ke.key() == Qt.Key.Key_Space:
                         sel = self.selected_paths()
                         if sel:
@@ -268,6 +276,11 @@ class EssentialView(BaseImageView):
             if et == QEvent.Type.KeyPress:
                 ke = event
                 if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Escape:
+                        if not self._list.selectedItems():
+                            return False
+                        self._list.clearSelection()
+                        return True
                     if ke.key() == Qt.Key.Key_Space:
                         sel = self.selected_paths()
                         if sel:
@@ -373,6 +386,8 @@ class EssentialView(BaseImageView):
             if isinstance(p, str):
                 self._selected_paths.add(p)
         if not items:
+            self._selected_path = None
+            self.selection_changed.emit("")
             return
         path = items[-1].data(Qt.ItemDataRole.UserRole)
         if isinstance(path, str):

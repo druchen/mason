@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -95,11 +95,11 @@ class FilterPanel(QWidget):
         row_lay.addWidget(self._frame, 0)
         row_lay.addWidget(self._clear_btn, 0)
 
-        self._tree = TagCheckTreeWidget()
+        self._tree = TagCheckTreeWidget(filter_panel=True)
         self._tree.setColumnCount(1)
         self._tree.setHeaderHidden(True)
         self._tree.setIndentation(14)
-        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._tree.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
         self._tree.setDragEnabled(False)
         self._tree.setAcceptDrops(False)
@@ -128,6 +128,11 @@ class FilterPanel(QWidget):
         self._configure_popup_width()
         self._sync_filter_row_height()
         self.reload_tags()
+
+    def leaveEvent(self, event: QEvent) -> None:  # type: ignore[override]
+        self._tree.clearSelection()
+        self._tree.setCurrentItem(None)
+        super().leaveEvent(event)
 
     def _apply_frame_style(self) -> None:
         self._frame.setStyleSheet(
@@ -233,7 +238,6 @@ class FilterPanel(QWidget):
                     it.flags()
                     | Qt.ItemFlag.ItemIsUserCheckable
                     | Qt.ItemFlag.ItemIsEnabled
-                    | Qt.ItemFlag.ItemIsSelectable
                 )
                 it.setCheckState(
                     0,

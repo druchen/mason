@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import secrets
 from pathlib import Path
 
 from typing import Literal
@@ -12,6 +13,16 @@ from app.core.tags_store import TagsStore
 
 SortKey = str
 TagMatchMode = Literal["all", "any"]
+
+# Random sort: path-only BLAKE2b until ``bump_random_sort_seed()`` runs (e.g. user picks Random
+# in the UI); then a keyed digest so each new pick can reshuffle.
+_random_sort_key: bytes | None = None
+
+
+def bump_random_sort_seed() -> None:
+    """New random ordering for the next ``sort_paths(..., "random", ...)`` (8-byte BLAKE2b key)."""
+    global _random_sort_key
+    _random_sort_key = secrets.token_bytes(8)
 
 
 def _stat_tuple(path: str) -> tuple[float, int]:
@@ -37,8 +48,11 @@ def _created_mtime(path: str) -> float:
 
 
 def _random_rank(path: str) -> bytes:
-    """Stable pseudo-random key per path (same order toggling ascending/descending)."""
-    return hashlib.blake2b(path.encode("utf-8", errors="surrogateescape"), digest_size=8).digest()
+    """Pseudo-random key per path; order changes when ``bump_random_sort_seed()`` is called."""
+    enc = path.encode("utf-8", errors="surrogateescape")
+    if _random_sort_key is None:
+        return hashlib.blake2b(enc, digest_size=8).digest()
+    return hashlib.blake2b(enc, digest_size=8, key=_random_sort_key).digest()
 
 
 def sort_paths(paths: list[str], sort_by: SortKey, ascending: bool) -> list[str]:

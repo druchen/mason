@@ -212,6 +212,11 @@ class ListView(BaseImageView):
             if et == QEvent.Type.KeyPress:
                 ke = event
                 if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Escape:
+                        if not self._list.selectedItems():
+                            return False
+                        self._list.clearSelection()
+                        return True
                     if ke.key() == Qt.Key.Key_Space:
                         sel = self.selected_paths()
                         if sel:
@@ -232,6 +237,11 @@ class ListView(BaseImageView):
             if et == QEvent.Type.KeyPress:
                 ke = event
                 if isinstance(ke, QKeyEvent):
+                    if ke.key() == Qt.Key.Key_Escape:
+                        if not self._list.selectedItems():
+                            return False
+                        self._list.clearSelection()
+                        return True
                     if ke.key() == Qt.Key.Key_Space:
                         sel = self.selected_paths()
                         if sel:
@@ -286,6 +296,8 @@ class ListView(BaseImageView):
     def _on_selection_changed(self) -> None:
         items = self._list.selectedItems()
         if not items:
+            self._selected_path = None
+            self.selection_changed.emit("")
             return
         path = items[-1].data(Qt.ItemDataRole.UserRole)
         if isinstance(path, str):

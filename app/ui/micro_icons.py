@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPainterPath
+from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 
 def chevron_down_small_pm() -> QPixmap:
@@ -83,42 +83,44 @@ def gear_icon() -> QIcon:
 
 
 def tag_icon_pm(d: int = 16) -> QPixmap:
-    """Solid price-tag silhouette with a punched hole (Tagging Mode; scales with *d*)."""
+    """Price tag (Tagging Mode); line art to match sort / gear micro-icons."""
     d = max(12, int(d))
-    w = float(d)
     pm = QPixmap(d, d)
     pm.fill(Qt.GlobalColor.transparent)
-
-    m = max(1.0, w * 0.11)
-    rx = w * 0.21
-    ry = m
-    rw = w * 0.58
-    rh = w * 0.40
-    rr = min(w * 0.055, rw * 0.25, rh * 0.35)
-
-    top = QPainterPath()
-    top.addRoundedRect(QRectF(rx, ry, rw, rh), rr, rr)
-
-    y_join = ry + rh - m * 0.12
-    point = QPainterPath()
-    point.moveTo(rx, y_join)
-    point.lineTo(rx + rw, y_join)
-    point.lineTo(w * 0.5, w - m * 0.32)
-    point.closeSubpath()
-
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(Qt.NoPen)
-    fill = QColor(228, 228, 228)
-    p.fillPath(top, fill)
-    p.fillPath(point, fill)
+    pen = QPen(QColor(160, 160, 160))
+    pen.setWidthF(max(1.2, d * 0.1))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
 
-    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationOut)
-    p.setBrush(QColor(255, 255, 255))
-    hr = w * 0.09
-    hcx = w * 0.5
-    hcy = ry + rh * 0.30
-    p.drawEllipse(QRectF(hcx - hr, hcy - hr, 2 * hr, 2 * hr))
+    margin = d * 0.14
+    usable = max(4.0, d - 2.0 * margin)
+    # Elongated pentagon: flat left edge, chamfered right forming a point (hole near tip).
+    w_tag = usable * 0.72
+    h_tag = usable * 0.40
+    chamfer = w_tag * 0.38
+
+    cx, cy = d / 2.0, d / 2.0
+    p.translate(cx, cy)
+    p.rotate(45.0)
+    p.translate(-w_tag / 2.0, -h_tag / 2.0)
+
+    outline = QPainterPath()
+    outline.moveTo(0.0, 0.0)
+    outline.lineTo(w_tag - chamfer, 0.0)
+    outline.lineTo(w_tag, h_tag / 2.0)
+    outline.lineTo(w_tag - chamfer, h_tag)
+    outline.lineTo(0.0, h_tag)
+    outline.closeSubpath()
+    p.drawPath(outline)
+
+    hole_r = max(0.75, h_tag * 0.17)
+    hole_cx = w_tag - chamfer * 0.52
+    hole_cy = h_tag / 2.0
+    p.drawEllipse(QRectF(hole_cx - hole_r, hole_cy - hole_r, 2.0 * hole_r, 2.0 * hole_r))
     p.end()
     return pm
 

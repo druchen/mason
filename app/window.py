@@ -346,7 +346,6 @@ class MainWindow(QMainWindow):
         center_col.setContentsMargins(0, 0, 0, 0)
         center_col.setSpacing(0)
         center_col.addWidget(self._preview, stretch=1)
-        self._preview.setMinimumWidth(0)
         center_col.addWidget(self._info)
 
         self._split_main = QSplitter(Qt.Orientation.Horizontal)
@@ -639,6 +638,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_preview_selection(self, path: str) -> None:
+        if not path:
+            self._selected_image = None
+            self._metadata.clear()
+            self._tags.set_selection([], None)
+            self._preview.take_preview_focus()
+            return
         self._selected_image = path
         self._metadata.show_path(path)
         self._sync_tags_selection()

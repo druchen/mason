@@ -42,6 +42,70 @@ def _creation_timestamp(st: os.stat_result) -> float:
     return float(st.st_mtime)
 
 
+def _decode_windows_xp_text(value: Any) -> str:
+    """Decode Windows XP EXIF fields (UTF-16 LE, null-terminated)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.replace("\x00", "").strip()
+    if isinstance(value, bytes):
+        for enc in ("utf-16le", "utf-8", "latin-1"):
+            try:
+                s = value.decode(enc).replace("\x00", "").strip()
+                if s:
+                    return s
+            except UnicodeDecodeError:
+                continue
+        return ""
+    return str(value).strip()
+
+
+def _decode_exif_user_comment(value: Any) -> str:
+    """Decode EXIF UserComment (charset prefix + payload)."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, bytes) or not value:
+        return ""
+    if len(value) >= 8:
+        head = value[:8]
+        if head.startswith(b"ASCII"):
+            return value[8:].decode("ascii", errors="replace").strip()
+        if head.startswith(b"UNICODE"):
+            return value[8:].decode("utf-16le", errors="replace").strip()
+        if head.startswith(b"\x00\x00\x00\x00\x00\x00\x00\x00"):
+            return value[8:].decode("utf-8", errors="replace").strip()
+    try:
+        return value.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _format_exif_rating(value: Any) -> str:
+    """Human-readable rating from EXIF (Adobe 0–5 or Windows Photo 0–99)."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        if len(value) == 1:
+            value = value[0]
+        else:
+            value = _decode_windows_xp_text(value)
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        s = str(value).strip()
+        return s
+    if n <= 0:
+        return ""
+    if n <= 5:
+        return str(n)
+    if n <= 99:
+        stars = min(5, max(1, (n + 12) // 25))
+        return f"{n} ({stars}★)"
+    return str(n)
+
+
 def _format_file_size(n: int) -> str:
     if n < 1024:
         return f"{n} bytes"
@@ -68,6 +132,9 @@ def read_metadata_summary(path: str | Path) -> dict[str, str]:
         "date_modified",
         "file_format",
         "color_mode",
+        "rating",
+        "authors",
+        "comments",
     )
     out: dict[str, str] = {k: dash for k in keys}
     if not p.is_file():
@@ -87,6 +154,33 @@ def read_metadata_summary(path: str | Path) -> dict[str, str]:
             out["color_mode"] = str(img.mode)
             w, h = img.size
             out["dimensions"] = f"{w} × {h}"
+            exif = getattr(img, "getexif", lambda: None)()
+            if exif:
+                rating_raw = exif.get(0x4746)
+                if rating_raw is not None:
+                    rtxt = _format_exif_rating(rating_raw)
+                    if rtxt:
+                        out["rating"] = rtxt
+                author = _decode_windows_xp_text(exif.get(0x9C9D))
+                if not author:
+                    artist = exif.get(0x013B)
+                    if artist is not None:
+                        if isinstance(artist, bytes):
+                            try:
+                                author = artist.decode("utf-8").strip()
+                            except UnicodeDecodeError:
+                                author = artist.decode("latin-1", errors="replace").strip()
+                        else:
+                            author = str(artist).strip()
+                if author:
+                    out["authors"] = author
+                comment = _decode_windows_xp_text(exif.get(0x9C9C))
+                if not comment:
+                    uc = exif.get(0x9286)
+                    if uc is not None:
+                        comment = _decode_exif_user_comment(uc)
+                if comment:
+                    out["comments"] = comment
     except OSError:
         pass
     return out

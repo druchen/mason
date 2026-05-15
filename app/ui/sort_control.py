@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.core.sort_filter import SortKey
+from app.core.sort_filter import SortKey, bump_random_sort_seed
 from app.ui.micro_icons import ICON_TOOLBUTTON_QSS, chevron_down_small_pm, sort_direction_arrow_pm
 
 _SORT_POPUP_WIDTH_PX = 120
@@ -74,7 +74,7 @@ class SortControlBar(QWidget):
         self._combo.setObjectName("sortControlCombo")
         for label, key in self.SORT_LABELS:
             self._combo.addItem(label, key)
-        self._combo.currentIndexChanged.connect(self._emit_sort)
+        self._combo.activated.connect(self._on_sort_activated)
         self._combo.setMinimumWidth(64)
         inner.addWidget(self._combo, 1, Qt.AlignmentFlag.AlignVCenter)
 
@@ -148,10 +148,13 @@ class SortControlBar(QWidget):
             """
         )
 
-    def _emit_sort(self) -> None:
-        key = self._combo.currentData()
-        if isinstance(key, str):
-            self.sort_changed.emit(key)
+    def _on_sort_activated(self, index: int) -> None:
+        key = self._combo.itemData(index)
+        if not isinstance(key, str):
+            return
+        if key == "random":
+            bump_random_sort_seed()
+        self.sort_changed.emit(key)
 
     def _on_asc_clicked(self) -> None:
         self._ascending = not self._ascending
