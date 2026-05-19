@@ -432,6 +432,16 @@ class EssentialView(BaseImageView):
         super().set_tile_background(enabled)
         self._refresh_all_icons()
 
+    def invalidate_thumbnails(self, paths: set[str]) -> None:
+        if not paths:
+            return
+        for path in paths:
+            self._pixmaps.pop(path, None)
+            item = self._path_to_item.get(path)
+            if item is not None:
+                item.setIcon(QIcon())
+        self._request_visible_icons()
+
     def apply_thumbnail(self, path: str, payload: object) -> None:
         pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:

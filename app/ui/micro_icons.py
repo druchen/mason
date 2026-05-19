@@ -133,6 +133,46 @@ def tag_icon() -> QIcon:
     return ic
 
 
+def scan_tags_icon_pm(d: int = 16) -> QPixmap:
+    """Viewfinder corners (scan folder for embedded tags)."""
+    d = max(12, int(d))
+    pm = QPixmap(d, d)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(160, 160, 160))
+    pen.setWidthF(max(1.2, d * 0.11))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    inset = d * 0.18
+    arm = d * 0.28
+    right = d - inset
+    bottom = d - inset
+    # top-left
+    p.drawLine(QPointF(inset, inset + arm), QPointF(inset, inset))
+    p.drawLine(QPointF(inset, inset), QPointF(inset + arm, inset))
+    # top-right
+    p.drawLine(QPointF(right - arm, inset), QPointF(right, inset))
+    p.drawLine(QPointF(right, inset), QPointF(right, inset + arm))
+    # bottom-left
+    p.drawLine(QPointF(inset, bottom - arm), QPointF(inset, bottom))
+    p.drawLine(QPointF(inset, bottom), QPointF(inset + arm, bottom))
+    # bottom-right
+    p.drawLine(QPointF(right - arm, bottom), QPointF(right, bottom))
+    p.drawLine(QPointF(right, bottom - arm), QPointF(right, bottom))
+    p.end()
+    return pm
+
+
+def scan_tags_icon() -> QIcon:
+    ic = QIcon()
+    ic.addPixmap(scan_tags_icon_pm(12))
+    ic.addPixmap(scan_tags_icon_pm(24))
+    return ic
+
+
 def no_sign_pm(d: int = 14) -> QPixmap:
     """Circle with diagonal (clear / prohibit)."""
     pm = QPixmap(d, d)

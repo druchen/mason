@@ -43,3 +43,29 @@ def scan_folder(folder: str | Path, recursive: bool = False) -> list[str]:
 
     paths.sort(key=lambda s: s.lower())
     return paths
+
+
+def snapshot_mtimes(paths: list[str]) -> dict[str, float]:
+    """Last-known ``st_mtime`` per path (for detecting in-place file edits)."""
+    out: dict[str, float] = {}
+    for path in paths:
+        try:
+            out[path] = os.path.getmtime(path)
+        except OSError:
+            continue
+    return out
+
+
+def paths_with_changed_mtime(paths: list[str], stored: dict[str, float]) -> set[str]:
+    """Paths whose modification time differs from *stored* (or are newly seen)."""
+    changed: set[str] = set()
+    for path in paths:
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            if path in stored:
+                changed.add(path)
+            continue
+        if stored.get(path) != mtime:
+            changed.add(path)
+    return changed

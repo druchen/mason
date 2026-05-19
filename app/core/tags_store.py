@@ -253,6 +253,65 @@ class TagsStore:
             )
         self._sync_iptc(norm)
 
+    def import_embedded_tags_from_files(
+        self, path_tag_pairs: list[tuple[str, list[str]]]
+    ) -> bool:
+        """Merge keywords read from files into SQLite (single transaction, no IPTC rewrite)."""
+        if not path_tag_pairs:
+            return False
+        changed = False
+        with self._connect() as conn:
+            name_to_id: dict[str, int] = {
+                str(row["name"]).casefold(): int(row["id"])
+                for row in conn.execute("SELECT id, name FROM tags")
+            }
+
+            def ensure_tag(name: str) -> int:
+                nonlocal changed
+                key = name.casefold()
+                tid = name_to_id.get(key)
+                if tid is not None:
+                    return tid
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO tags(name, parent_id) VALUES (?, NULL)",
+                    (name,),
+                )
+                if cur.rowcount:
+                    tid = int(cur.lastrowid)
+                    mx = conn.execute(
+                        "SELECT MAX(sort_order) AS m FROM tags WHERE parent_id IS NULL"
+                    ).fetchone()["m"]
+                    conn.execute(
+                        "UPDATE tags SET sort_order = ? WHERE id = ?",
+                        ((mx if mx is not None else -1) + 1, tid),
+                    )
+                    changed = True
+                else:
+                    row = conn.execute(
+                        "SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (name,)
+                    ).fetchone()
+                    tid = int(row["id"]) if row else 0
+                if tid:
+                    name_to_id[key] = tid
+                return tid
+
+            for path, tag_names in path_tag_pairs:
+                norm = str(Path(path).resolve())
+                for raw in tag_names:
+                    name = raw.strip()
+                    if not name:
+                        continue
+                    tid = ensure_tag(name)
+                    if not tid:
+                        continue
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO image_tags(image_path, tag_id) VALUES (?, ?)",
+                        (norm, tid),
+                    )
+                    if cur.rowcount:
+                        changed = True
+        return changed
+
     def remove_tag_from_image(self, image_path: str, tag_id: int) -> None:
         norm = str(Path(image_path).resolve())
         with self._connect() as conn:

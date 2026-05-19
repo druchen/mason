@@ -34,18 +34,9 @@ def scan_paths_for_embedded_tags(
 
 def apply_embedded_tags_to_store(
     store: TagsStore, path_tag_pairs: list[tuple[str, list[str]]]
-) -> None:
+) -> bool:
     """Apply pre-scanned embedded tags to SQLite (call from the main / store thread)."""
-    for path, tag_names in path_tag_pairs:
-        for name in tag_names:
-            name = name.strip()
-            if not name:
-                continue
-            try:
-                tid = store.add_tag(name)
-                store.assign_tag_to_image(path, tid)
-            except Exception:
-                continue
+    return store.import_embedded_tags_from_files(path_tag_pairs)
 
 
 def import_tags_from_folder(image_paths: list[str], store: TagsStore) -> None:

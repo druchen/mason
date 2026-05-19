@@ -67,3 +67,7 @@ class BaseImageView(QWidget):
 
     def apply_thumbnail(self, path: str, payload: object) -> None:
         del path, payload
+
+    def invalidate_thumbnails(self, paths: set[str]) -> None:
+        """Drop cached pixmaps for *paths* and queue fresh decodes (subclasses override)."""
+        del paths

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from PySide6.QtCore import QByteArray, QPoint, QMimeData, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -78,6 +79,7 @@ class MainWindow(QMainWindow):
 
         self._folder = self._settings.get("last_folder") or str(Path.home())
         self._raw_paths: list[str] = []
+        self._path_mtimes: dict[str, float] = {}
         self._selected_image: str | None = None
         self._fullscreen_view = None
         self._photoshop_exe = str(self._settings.get("photoshop_exe") or "")
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self._setup_layout()
         self._apply_stylesheet()
         self._wire_signals()
+        self._wire_shortcuts()
 
         fav_raw = self._settings.get("favorite_folders")
         fav_list = fav_raw if isinstance(fav_raw, list) else []
@@ -470,6 +473,7 @@ class MainWindow(QMainWindow):
         self._info.thumbnail_size_changed.connect(self._on_thumb_size)
         self._tags.tags_changed.connect(self._on_tags_changed)
         self._tags.tag_order_changed.connect(self._filter.reload_tags)
+        self._tags.scan_tags_requested.connect(self._on_scan_tags_requested)
         self._filter.filter_changed.connect(self._refresh_paths)
         self._preview.fullscreen_requested.connect(self._open_fullscreen)
         self._preview.delete_requested.connect(self._delete_files)
@@ -481,6 +485,27 @@ class MainWindow(QMainWindow):
         self._split_main.splitterMoved.connect(self._on_splitter_moved)
         self._split_left.splitterMoved.connect(self._on_splitter_moved)
         self._split_right.splitterMoved.connect(self._on_splitter_moved)
+
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_application_state_changed)
+
+    def _on_application_state_changed(self, state: Qt.ApplicationState) -> None:
+        """Rescan folder when Mason is foregrounded (alt-tab / taskbar); WindowActivate is unreliable on Windows."""
+        if state != Qt.ApplicationState.ApplicationActive:
+            return
+        if self._fullscreen_view is not None:
+            return
+        QTimer.singleShot(0, self._rescan_current_folder)
+
+    def _wire_shortcuts(self) -> None:
+        rename_tag = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+        rename_tag.setContext(Qt.ShortcutContext.WindowShortcut)
+        rename_tag.activated.connect(self._tags.rename_focused_tag)
+
+        refresh_folder = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
+        refresh_folder.setContext(Qt.ShortcutContext.WindowShortcut)
+        refresh_folder.activated.connect(self._rescan_current_folder)
 
     # ------------------------------------------------------------------
     # Folder / path management
@@ -524,7 +549,7 @@ class MainWindow(QMainWindow):
         if not saved:
             return
         self._raw_paths = file_scanner.scan_folder(self._folder)
-        self._start_embedded_tag_import(list(self._raw_paths))
+        self._path_mtimes = file_scanner.snapshot_mtimes(self._raw_paths)
         self._refresh_paths()
         last = saved[-1]
         pick = self._path_matches_visible(last, self._visible_paths())
@@ -565,10 +590,47 @@ class MainWindow(QMainWindow):
 
     def _load_folder(self, folder: str) -> None:
         self._raw_paths = file_scanner.scan_folder(folder)
+        self._path_mtimes = file_scanner.snapshot_mtimes(self._raw_paths)
         self._selected_image = None
         self._metadata.clear()
         self._sync_tags_selection()
         self._refresh_paths()
+
+    def _apply_thumbnail_content_changes(self, changed: set[str]) -> None:
+        if not changed:
+            return
+        for path in changed:
+            try:
+                self._path_mtimes[path] = os.path.getmtime(path)
+            except OSError:
+                self._path_mtimes.pop(path, None)
+        self._thumb_cache.invalidate_paths(changed)
+        self._preview.invalidate_thumbnails_for_paths(changed)
+        if self._selected_image in changed:
+            self._metadata.show_path(self._selected_image)
+
+    def _rescan_current_folder(self) -> None:
+        """Re-read folder from disk: new/removed files, or in-place edits (mtime)."""
+        if not self._folder:
+            return
+        try:
+            if not Path(self._folder).is_dir():
+                return
+        except OSError:
+            return
+        new_paths = file_scanner.scan_folder(self._folder)
+        if new_paths != self._raw_paths:
+            self._raw_paths = new_paths
+            self._path_mtimes = file_scanner.snapshot_mtimes(new_paths)
+            self._refresh_paths()
+            return
+        changed = file_scanner.paths_with_changed_mtime(new_paths, self._path_mtimes)
+        self._apply_thumbnail_content_changes(changed)
+
+    def _on_scan_tags_requested(self) -> None:
+        if not self._raw_paths:
+            return
+        self._tags.set_scan_busy(True)
         self._start_embedded_tag_import(list(self._raw_paths))
 
     def _start_embedded_tag_import(self, paths: list[str]) -> None:
@@ -582,7 +644,6 @@ class MainWindow(QMainWindow):
                 old.scanned.disconnect()
             except TypeError:
                 pass
-            old.wait(8000)
             old.deleteLater()
             self._tag_import_thread = None
         th = _EmbeddedTagScanThread(paths)
@@ -595,20 +656,28 @@ class MainWindow(QMainWindow):
         th = self.sender()
         if th is self._tag_import_thread:
             self._tag_import_thread = None
+        self._tags.set_scan_busy(False)
 
     def _on_embedded_tag_scan_finished(self, pairs: object, generation: int) -> None:
-        if generation != self._tag_import_generation:
-            return
-        if not isinstance(pairs, list):
-            return
-        from app.core.tags_importer import apply_embedded_tags_to_store
+        try:
+            if generation != self._tag_import_generation:
+                return
+            if not isinstance(pairs, list):
+                return
+            from app.core.tags_importer import apply_embedded_tags_to_store
 
-        apply_embedded_tags_to_store(self._store, cast(list[tuple[str, list[str]]], pairs))
-        self._filter.reload_tags()
-        self._tags.reload_tree_from_store()
-        self._refresh_paths()
-        if self._selected_image:
-            self._metadata.show_path(self._selected_image)
+            changed = apply_embedded_tags_to_store(
+                self._store, cast(list[tuple[str, list[str]]], pairs)
+            )
+            self._filter.reload_tags()
+            self._tags.reload_tree_from_store()
+            if changed and self._filter.selected_tag_ids():
+                self._refresh_paths()
+            elif self._selected_image:
+                self._metadata.show_path(self._selected_image)
+                self._sync_tags_selection()
+        finally:
+            self._tags.set_scan_busy(False)
 
     def _refresh_paths(self) -> None:
         """Re-sort/filter the current folder, preserving the current image selection."""
@@ -771,6 +840,16 @@ class MainWindow(QMainWindow):
                     self._raw_paths[i] = new_str
                     break
 
+        self._path_mtimes.pop(str(old), None)
+        try:
+            self._path_mtimes.pop(str(old_res), None)
+        except OSError:
+            pass
+        try:
+            self._path_mtimes[new_str] = os.path.getmtime(new_str)
+        except OSError:
+            pass
+
         if self._selected_image:
             try:
                 sel_res = Path(self._selected_image).resolve()
@@ -864,6 +943,8 @@ class MainWindow(QMainWindow):
 
         # Update raw paths list and refresh
         self._raw_paths = [p for p in self._raw_paths if p not in deleted]
+        for path in deleted:
+            self._path_mtimes.pop(path, None)
         if self._selected_image in deleted:
             self._selected_image = None
             self._metadata.clear()

@@ -689,6 +689,16 @@ class FilmstripView(BaseImageView):
         self._scroll_thumb_into_view(new_path)
         self._thumb_strip_request_preview()
 
+    def invalidate_thumbnails(self, paths: set[str]) -> None:
+        if not paths:
+            return
+        for path in paths:
+            self._pixmaps.pop(path, None)
+        self._refresh_strip_icons()
+        if self._selected_path in paths:
+            self._preview.setText("Loading…")
+            self._thumb_strip_request_preview()
+
     def apply_thumbnail(self, path: str, payload: object) -> None:
         pm = thumbnail_payload_to_pixmap(payload)
         if pm is None:

@@ -14,6 +14,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemDelegate,
     QProxyStyle,
     QStyle,
     QStyleFactory,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
+    QWidget,
 )
 
 # Vertical spacing, compact square checkbox, no selection in branch gutter.
@@ -225,6 +227,7 @@ class TagCheckTreeWidget(QTreeWidget):
 
     def __init__(self, parent=None, *, filter_panel: bool = False) -> None:
         super().__init__(parent)
+        self._tags_panel = None
         self.setStyleSheet(_TAG_CHECK_TREE_QSS_FILTER if filter_panel else _TAG_CHECK_TREE_QSS)
         # Windows "windowsvista"/"windows11" styles often ignore PM_ExclusiveIndicator* for view
         # checkboxes; Fusion honors them. Tree-only so the rest of the app stays native.
@@ -236,6 +239,15 @@ class TagCheckTreeWidget(QTreeWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._press_pos_vp: QPoint | None = None
         self._press_item: QTreeWidgetItem | None = None
+
+    def set_tags_panel(self, panel) -> None:
+        self._tags_panel = panel
+
+    def closeEditor(self, editor: QWidget, hint: QAbstractItemDelegate.EndEditHint) -> None:  # type: ignore[override]
+        panel = self._tags_panel
+        if panel is not None:
+            panel.on_tree_close_editor(editor, hint)
+        super().closeEditor(editor, hint)
 
     def _viewport_pos(self, event: QMouseEvent) -> QPoint:
         p = event.position().toPoint()
@@ -275,6 +287,13 @@ class TagCheckTreeWidget(QTreeWidget):
             self,
         )
 
+    def inline_edit_left_inset(self, item: QTreeWidgetItem) -> int:
+        """Pixels from the item rect's left edge to where label / inline field text should start."""
+        vr = self.visualItemRect(item)
+        if not vr.isValid():
+            return 28
+        return max(0, self._native_checkbox_right(item, vr) - vr.left() + 4)
+
     def _native_checkbox_right(self, item: QTreeWidgetItem, vr: QRect) -> int:
         cb = self._check_indicator_rect(item)
         ind = self.style().pixelMetric(
@@ -297,6 +316,8 @@ class TagCheckTreeWidget(QTreeWidget):
                 return
             item = self.itemAt(vp_now)
             if item is None or item != self._press_item:
+                return
+            if self.itemWidget(item, 0) is not None:
                 return
             if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
                 return

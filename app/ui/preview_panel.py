@@ -387,6 +387,18 @@ class PreviewPanel(QWidget):
             self.setUpdatesEnabled(True)
             self.update()
 
+    def invalidate_thumbnails_for_paths(self, paths: set[str]) -> None:
+        """Re-decode thumbnails for *paths* in every layout view (visible items only)."""
+        if not paths:
+            return
+        seen: set[BaseImageView] = set()
+        for view in self._views.values():
+            if view is not None:
+                seen.add(view)
+        seen.add(self.active_view())
+        for view in seen:
+            view.invalidate_thumbnails(paths)
+
     def _apply_to_active(self) -> None:
         v = self.active_view()
         v.set_thumbnail_size(self._thumb_size, reflow=False)

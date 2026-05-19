@@ -242,6 +242,12 @@ class ThumbnailCache(QObject):
             )
         )
 
+    def invalidate_paths(self, paths: set[str]) -> None:
+        """Drop in-flight work so the next ``request`` re-reads files from disk."""
+        if not paths:
+            return
+        self._pending = {(p, t) for p, t in self._pending if p not in paths}
+
     def clear_pending(self) -> None:
         self._pending.clear()
 
