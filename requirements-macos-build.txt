@@ -1,0 +1,2 @@
+# macOS packaging (PyInstaller). Run on a Mac from repo root.
+pyinstaller>=6.0,<8

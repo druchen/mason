@@ -14,14 +14,23 @@ from app.window import MainWindow
 
 
 def _app_icon_path() -> Path | None:
-    """Bundled Mason.ico when frozen (PyInstaller onedir) or dev tree under assets/icons."""
+    """Bundled icons when frozen (PyInstaller onedir) or dev tree under assets/icons."""
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
-        ico = base / "_internal" / "assets" / "icons" / "Mason.ico"
-        return ico if ico.is_file() else None
-    root = Path(__file__).resolve().parent
-    ico = root / "assets" / "icons" / "Mason.ico"
-    return ico if ico.is_file() else None
+        d = base / "_internal" / "assets" / "icons"
+    else:
+        d = Path(__file__).resolve().parent / "assets" / "icons"
+    if sys.platform == "darwin":
+        for name in ("Mason.icns", "Mason.ico"):
+            p = d / name
+            if p.is_file():
+                return p
+    else:
+        for name in ("Mason.ico", "Mason.icns"):
+            p = d / name
+            if p.is_file():
+                return p
+    return None
 
 
 def main() -> None:
