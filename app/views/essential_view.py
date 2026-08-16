@@ -40,6 +40,12 @@ from app.views.letterbox_icons import (
 _GAP = 8
 _VIEWPORT_VPAD = 8  # top/bottom only; horizontal inset is ml/mr from tile math
 _VIEWPORT_LPAD = 12  # fixed space from viewport left edge to first tile column
+
+# A wheel notch scrolls QApplication.wheelScrollLines() (3 on Windows) x the
+# scrollbar's singleStep, and Qt sets singleStep to one full tile row. At large
+# thumbnail sizes a row is most of the viewport, so a single notch jumps almost a
+# page. Stepping by a fraction of a row brings a notch back to ~1.5 rows.
+_SCROLL_ROWS_PER_STEP = 0.025
 _ITEM_CHROME = 12
 _SLIDER_LO = 48
 _SLIDER_HI = 512
@@ -209,8 +215,17 @@ class EssentialView(BaseImageView):
                 it.setSizeHint(hint)
 
         self._list.doItemsLayout()
+        # After the layout pass: doItemsLayout resets singleStep to the row pitch.
+        self._apply_wheel_step()
         self._refresh_all_icons()
         QTimer.singleShot(0, self._request_visible_icons)
+
+    def _apply_wheel_step(self) -> None:
+        """Scroll a fraction of a row per step instead of a whole one."""
+        row = self._outer_px + _GAP
+        self._list.verticalScrollBar().setSingleStep(
+            max(1, int(row * _SCROLL_ROWS_PER_STEP))
+        )
 
     def _prune_pixmaps_not_in(self, keep: set[str]) -> None:
         for path in list(self._pixmaps.keys()):
