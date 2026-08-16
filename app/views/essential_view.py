@@ -33,19 +33,26 @@ from app.views.selection_overlay import NoFillSelectionDelegate
 from app.views.letterbox_icons import (
     PREVIEW_SURFACE,
     fit_pixmap_letterbox_square,
-    request_thumbnails_for_visible_list_items,
-    visible_item_paths_with_margin,
 )
 
 _GAP = 8
 _VIEWPORT_VPAD = 8  # top/bottom only; horizontal inset is ml/mr from tile math
 _VIEWPORT_LPAD = 12  # fixed space from viewport left edge to first tile column
 
-# A wheel notch scrolls QApplication.wheelScrollLines() (3 on Windows) x the
-# scrollbar's singleStep, and Qt sets singleStep to one full tile row. At large
-# thumbnail sizes a row is most of the viewport, so a single notch jumps almost a
-# page. Stepping by a fraction of a row brings a notch back to ~1.5 rows.
-_SCROLL_ROWS_PER_STEP = 0.025
+# Wheel scrolling is animated rather than stepped: a notch adds to a target and a
+# timer eases the scrollbar toward it. Distance and smoothness are independent
+# this way — Qt's own stepping ties them together, which is why a small step is
+# the only way to get smooth motion out of it, at the cost of speed.
+_SCROLL_NOTCH_FRACTION = 0.28  # viewport height travelled per wheel notch
+_SCROLL_TICK_MS = 16  # ~60fps
+_SCROLL_EASE = 0.22  # fraction of the remaining distance per tick
+
+# The visible-icon pass is ~0.4ms via _candidate_index_window, so a light
+# coalesce is enough; it also runs once when the scroll settles.
+_ICON_REFRESH_MS = 32
+
+# Governs keyboard/page stepping only, now that the wheel is handled above.
+_SCROLL_ROWS_PER_STEP = 0.5
 _ITEM_CHROME = 12
 _SLIDER_LO = 48
 _SLIDER_HI = 512
@@ -89,13 +96,22 @@ class EssentialView(BaseImageView):
         self._list.customContextMenuRequested.connect(self._on_context_menu)
         self._list.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._list.itemSelectionChanged.connect(self._on_selection_changed)
-        self._list.verticalScrollBar().valueChanged.connect(lambda _: self._request_visible_icons())
+        self._list.verticalScrollBar().valueChanged.connect(lambda _: self._schedule_visible_icons())
         self._list.installEventFilter(self)
         self._list.viewport().installEventFilter(self)
 
         self._layout_timer = QTimer(self)
         self._layout_timer.setSingleShot(True)
         self._layout_timer.timeout.connect(self._flush_icon_layout)
+
+        self._scroll_target: float | None = None
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(_SCROLL_TICK_MS)
+        self._scroll_timer.timeout.connect(self._tick_smooth_scroll)
+
+        self._icon_refresh_timer = QTimer(self)
+        self._icon_refresh_timer.setSingleShot(True)
+        self._icon_refresh_timer.timeout.connect(self._request_visible_icons)
 
         self._drag_press_pos: QPoint | None = None
         self._drag_anchor: QListWidgetItem | None = None
@@ -247,10 +263,116 @@ class EssentialView(BaseImageView):
         for path, item in self._path_to_item.items():
             item.setIcon(self._icon_for_path(path))
 
+    def _schedule_visible_icons(self) -> None:
+        """Coalesce the visible-icon pass — it is far too heavy to run per frame."""
+        if not self._icon_refresh_timer.isActive():
+            self._icon_refresh_timer.start(_ICON_REFRESH_MS)
+
+    def _wheel_scroll(self, event) -> bool:
+        """Aim the smooth scroller at a new target. False lets Qt handle the event."""
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier
+        ):
+            return False
+        dy = event.angleDelta().y()
+        if dy == 0:
+            return False
+        sb = self._list.verticalScrollBar()
+        if sb.maximum() <= sb.minimum():
+            return False
+        distance = max(1.0, self._list.viewport().height() * _SCROLL_NOTCH_FRACTION)
+        # Chain onto the live target so a fast flick accumulates instead of resetting.
+        base = self._scroll_target if self._scroll_timer.isActive() else float(sb.value())
+        target = base - (dy / 120.0) * distance
+        self._scroll_target = min(float(sb.maximum()), max(float(sb.minimum()), target))
+        if not self._scroll_timer.isActive():
+            self._scroll_timer.start()
+        return True
+
+    def _tick_smooth_scroll(self) -> None:
+        sb = self._list.verticalScrollBar()
+        if self._scroll_target is None:
+            self._scroll_timer.stop()
+            return
+        cur = float(sb.value())
+        diff = self._scroll_target - cur
+        if abs(diff) <= 1.0:
+            sb.setValue(int(round(self._scroll_target)))
+            self._scroll_timer.stop()
+            self._scroll_target = None
+            self._request_visible_icons()  # settle on the final position
+            return
+        step = diff * _SCROLL_EASE
+        if abs(step) < 1.0:  # never round to zero, or this never converges
+            step = 1.0 if diff > 0 else -1.0
+        sb.setValue(int(cur + step))
+
+    def _measure_grid(self) -> tuple[int, int, int] | None:
+        """(columns, row pitch, viewport y of row 0), measured from real item rects.
+
+        Measured rather than taken from ``_ncol``/``_outer_px`` so it matches
+        whatever Qt actually laid out, in the same viewport coordinates as
+        ``visualItemRect``. The scrollbar's value is a different space.
+        """
+        n = self._list.count()
+        if n <= 0:
+            return None
+        first = self._list.item(0)
+        if first is None:
+            return None
+        r0 = self._list.visualItemRect(first)
+        if not r0.isValid():
+            return None
+        for i in range(1, min(n, 65)):  # a row is at most _COLS_WHEN_SLIDER_MIN wide
+            item = self._list.item(i)
+            if item is None:
+                continue
+            ri = self._list.visualItemRect(item)
+            if ri.isValid() and ri.y() != r0.y():
+                return i, max(1, ri.y() - r0.y()), r0.y()
+        return n, max(1, r0.height()), r0.y()
+
+    def _candidate_index_window(self, margin_px: int) -> range:
+        """Item indices that could fall within ``margin_px`` of the viewport.
+
+        Tiles are uniform, so the row band is arithmetic. The shared helpers in
+        letterbox_icons scan all N items, which costs ~28ms at 10k and so cannot
+        run while scrolling. Padded a row each way to stay a superset of the
+        exact rect test, which the caller still applies.
+        """
+        n = self._list.count()
+        geo = self._measure_grid()
+        if geo is None:
+            return range(n)
+        ncol, pitch, y0 = geo
+        lo_y = -margin_px
+        hi_y = self._list.viewport().height() + margin_px
+        first_row = (lo_y - y0) // pitch - 1
+        last_row = (hi_y - y0) // pitch + 1
+        lo = max(0, first_row * ncol)
+        hi = min(n, (last_row + 1) * ncol)
+        return range(lo, max(lo, hi))
+
     def _request_visible_icons(self) -> None:
-        keep = visible_item_paths_with_margin(self._list, 320)
+        vp_rect = self._list.viewport().rect()
+        keep_rect = vp_rect.adjusted(-320, -320, 320, 320)
+        req = max(48, int(self._cell_px))
+        keep: set[str] = set()
+        for i in self._candidate_index_window(320):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            r = self._list.visualItemRect(item)
+            if not r.isValid():
+                continue
+            p = item.data(Qt.ItemDataRole.UserRole)
+            if not isinstance(p, str):
+                continue
+            if keep_rect.intersects(r):
+                keep.add(p)
+            if vp_rect.intersects(r):
+                self._thumb_cache.request(p, req)
         keep |= self._selected_paths
-        request_thumbnails_for_visible_list_items(self._list, self._cell_px, self._thumb_cache)
         self._prune_pixmaps_not_in(keep)
 
     def _finish_list_external_drag_gesture(self) -> None:
@@ -291,6 +413,8 @@ class EssentialView(BaseImageView):
 
         if obj is self._list.viewport():
             et = event.type()
+            if et == QEvent.Type.Wheel:
+                return self._wheel_scroll(event)
             if et == QEvent.Type.KeyPress:
                 ke = event
                 if isinstance(ke, QKeyEvent):

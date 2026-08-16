@@ -37,6 +37,7 @@ Thumbs.db
 .env
 .env.*
 .wrangler/
+_CMD.txt
 
-# Optional: Cursor local state (uncomment if you prefer not to track)
-# .cursor/
+.cursor/
+.claude/

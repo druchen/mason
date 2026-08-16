@@ -1,21 +1,3 @@
 Windows:
 
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-
-python -m pip install --upgrade pip
-
-
-pip install -r requirements.txt
-pip install -r requirements-windows-build.txt
-
-
-pyinstaller packaging\windows\Mason.spec
-
-
-MacOS:
-
-python3 -m pip install -r requirements.txt -r requirements-macos-build.txt
-
-python3 -m PyInstaller packaging/macos/Mason.spec
+.venv\Scripts\pyinstaller.exe --noconfirm packaging\windows\Mason.spec
