@@ -43,12 +43,12 @@ class SortControlBar(QWidget):
     sort_changed = Signal(str)
     ascending_changed = Signal(bool)
 
+    # Date Created leads: it is the one that answers "what did I just add?".
+    # It is also index 0, which set_sort() falls back to for an unknown key.
     SORT_LABELS: list[tuple[str, SortKey]] = [
-        ("Name", "name"),
-        ("Date Modified", "date_modified"),
         ("Date Created", "date_created"),
-        ("Size", "size"),
-        ("Type", "type"),
+        ("Date Modified", "date_modified"),
+        ("Name", "name"),
         ("Random", "random"),
     ]
 
@@ -176,7 +176,7 @@ class SortControlBar(QWidget):
 
     def sort_key(self) -> SortKey:
         k = self._combo.currentData()
-        return str(k) if isinstance(k, str) else "name"
+        return str(k) if isinstance(k, str) else "date_created"
 
     def ascending(self) -> bool:
         return self._ascending

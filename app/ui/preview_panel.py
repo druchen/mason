@@ -23,12 +23,14 @@ from app.ui.drop_import import mime_looks_external_folder_import
 from app.ui.mason_tab_widget import TabBarGapDividerLine
 from app.ui.sort_control import SortControlBar
 from app.views.base_view import BaseImageView
-from app.views.filmstrip_view import FilmstripView
 from app.views.essential_view import EssentialView
-from app.views.list_view import ListView
 
 _MODE_ORDER = ("essential", "filmstrip", "list")
 
+# No tab carries a bottom border: every tab runs into the seam line below it, so
+# the unselected ones read as tucked behind it rather than closed off above it.
+# ``min-height`` is substituted per font size — see ``_fav_tab_qss`` — because a
+# fixed value leaves the tabs floating once the header row grows taller.
 _PREVIEW_FAV_TAB_QSS = """
 QTabBar#preview_fav_tab_bar {
     background: transparent;
@@ -36,13 +38,16 @@ QTabBar#preview_fav_tab_bar {
 QTabBar#preview_fav_tab_bar::tab {
     min-width: 180px;
     max-width: 220px;
-    min-height: 22px;
+    min-height: __TAB_MIN_H__px;
     padding: 4px 8px 4px 14px;
     margin-right: 2px;
     margin-bottom: 0;
     background-color: #1f1f1f;
     color: #d8d8d8;
-    border: 1px solid #404040;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #404040;
+    border-bottom: none;
     border-top-left-radius: 3px;
     border-top-right-radius: 3px;
 }
@@ -68,7 +73,10 @@ QTabBar#preview_fav_tab_bar[mason_browse_non_favorite="true"]::tab:selected {
     padding: 4px 8px 4px 14px;
     background-color: #1f1f1f;
     color: #d8d8d8;
-    border: 1px solid #404040;
+    border-top: 1px solid #404040;
+    border-left: 1px solid #404040;
+    border-right: 1px solid #404040;
+    border-bottom: none;
     border-top-left-radius: 3px;
     border-top-right-radius: 3px;
 }
@@ -76,6 +84,20 @@ QTabBar#preview_fav_tab_bar[mason_browse_non_favorite="true"]::tab:hover {
     background-color: #2a2a2a;
 }
 """
+
+# padding-top + padding-bottom (8) + border-top (1); there is no bottom border.
+_FAV_TAB_CHROME_PX = 9
+
+
+def _fav_tab_qss(header_h: int) -> str:
+    """Tab QSS sized so the tabs reach down to the seam line.
+
+    The tab bar is inset one pixel from the top of the header row, and the seam
+    sits on the row directly below the header, so a tab spans ``header_h - 1``.
+    """
+    return _PREVIEW_FAV_TAB_QSS.replace(
+        "__TAB_MIN_H__", str(max(14, header_h - 1 - _FAV_TAB_CHROME_PX))
+    )
 
 
 class PreviewPanel(QWidget):
@@ -102,14 +124,11 @@ class PreviewPanel(QWidget):
 
         self._view_types: dict[str, type[BaseImageView]] = {
             "essential": EssentialView,
-            "filmstrip": FilmstripView,
-            "list": ListView,
         }
         self._views: dict[str, BaseImageView | None] = {mode: None for mode in _MODE_ORDER}
 
         self._fav_tabs = QTabBar()
         self._fav_tabs.setObjectName("preview_fav_tab_bar")
-        self._fav_tabs.setStyleSheet(_PREVIEW_FAV_TAB_QSS)
         self._fav_tabs.setProperty("mason_browse_non_favorite", False)
         self._fav_tabs.setMovable(True)
         self._fav_tabs.setExpanding(False)
@@ -139,7 +158,7 @@ class PreviewPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self._header, 0)
-        lay.addWidget(self._fav_tab_divider, 0)
+        lay.addSpacing(1)  # the seam row; the divider overlaps into the header
         lay.addSpacing(8)
         lay.addWidget(self._stack, stretch=1)
 
@@ -153,6 +172,10 @@ class PreviewPanel(QWidget):
         self._cache.thumbnail_ready.connect(self._on_thumbnail_ready)
 
         self._sync_header_height()
+        # The header is reparented into this panel after the divider is built, so it
+        # would otherwise stack on top of it. Restack exactly once, here: calling
+        # raise_() from the resize path reorders siblings mid-layout and crashes.
+        self._fav_tab_divider.raise_()
 
     def _import_mime_acceptable(self, mime: QMimeData) -> bool:
         return bool(
@@ -191,9 +214,24 @@ class PreviewPanel(QWidget):
         h = max(28, min(34, fm.height() + 18))
         self._header.setFixedHeight(h)
         self._fav_tabs.setFixedHeight(h)
+        # Restyle here rather than in __init__: the tab height has to follow
+        # the header height, which is font-dependent.
+        self._fav_tabs.setStyleSheet(_fav_tab_qss(h))
         # Match MainToolbar search field height (toolbar.py _sync_search_height).
         sort_h = max(22, min(28, fm.height() + 10))
         self._sort_bar.set_field_height(sort_h)
+        self._position_fav_divider()
+
+    def _position_fav_divider(self) -> None:
+        """Straddle the header/content seam so the corner elbows have room."""
+        rad = TabBarGapDividerLine.CORNER_R
+        dv = self._fav_tab_divider
+        dv.setGeometry(0, max(0, self._header.height() - rad), max(0, self.width()), rad + 1)
+        dv.update()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_fav_divider()
 
     def _parse_favorites_entries(self, data: object) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

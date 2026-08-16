@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import math
+import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
@@ -48,129 +48,119 @@ def sort_direction_arrow_pm(*, up: bool, d: int = 14) -> QPixmap:
     return pm
 
 
-def gear_pm(d: int = 16) -> QPixmap:
-    """Simple cog: hub + radial teeth (matches light gray line icons)."""
+# Material Design "settings" cog, 24x24 grid. Two subpaths: the cog body and
+# the centre circle, which the odd-even fill rule turns into a hole.
+_GEAR_PATH = (
+    "M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64"
+    "l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65"
+    "C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98"
+    "l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65"
+    "c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46"
+    "c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4"
+    "c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22"
+    "l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65z"
+    "M12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"
+)
+
+_SVG_TOKEN = re.compile(r"([MmLlHhVvCcSsZz])|([-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?)")
+_SVG_ARGC = {"M": 2, "L": 2, "H": 1, "V": 1, "C": 6, "S": 4, "Z": 0}
+
+
+def svg_path(d: str, size: float, viewbox: float = 24.0) -> QPainterPath:
+    """Parse an SVG path's ``d`` attribute into a QPainterPath scaled to *size*.
+
+    Covers the subset these icons use — M/L/H/V/C/S/Z, absolute and relative —
+    so pasted glyphs render exactly without pulling QtSvg into the bundle.
+    """
+    k = size / viewbox
+    path = QPainterPath()
+    toks: list[str | float] = []
+    for m in _SVG_TOKEN.finditer(d):
+        toks.append(m.group(1) if m.group(1) else float(m.group(2)))
+
+    cmd: str | None = None
+    x = y = 0.0  # current point, in viewbox units
+    start_x = start_y = 0.0
+    ctrl_x = ctrl_y = None  # previous cubic's second control point, for S
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if isinstance(tok, str):
+            i += 1
+            if tok in "Zz":
+                path.closeSubpath()
+                x, y = start_x, start_y
+                ctrl_x = ctrl_y = None
+                cmd = None
+            else:
+                cmd = tok
+            continue
+        if cmd is None:
+            i += 1
+            continue
+        n = _SVG_ARGC[cmd.upper()]
+        a = [float(v) for v in toks[i : i + n]]  # type: ignore[arg-type]
+        i += n
+        rel = cmd.islower()
+        op = cmd.upper()
+        if op == "M":
+            x, y = (x + a[0], y + a[1]) if rel else (a[0], a[1])
+            path.moveTo(x * k, y * k)
+            start_x, start_y = x, y
+            ctrl_x = ctrl_y = None
+            cmd = "l" if rel else "L"  # extra pairs after a moveto are linetos
+        elif op == "L":
+            x, y = (x + a[0], y + a[1]) if rel else (a[0], a[1])
+            path.lineTo(x * k, y * k)
+            ctrl_x = ctrl_y = None
+        elif op == "H":
+            x = x + a[0] if rel else a[0]
+            path.lineTo(x * k, y * k)
+            ctrl_x = ctrl_y = None
+        elif op == "V":
+            y = y + a[0] if rel else a[0]
+            path.lineTo(x * k, y * k)
+            ctrl_x = ctrl_y = None
+        elif op == "C":
+            x1, y1, x2, y2, nx, ny = a
+            if rel:
+                x1, y1, x2, y2, nx, ny = x + x1, y + y1, x + x2, y + y2, x + nx, y + ny
+            path.cubicTo(x1 * k, y1 * k, x2 * k, y2 * k, nx * k, ny * k)
+            ctrl_x, ctrl_y = x2, y2
+            x, y = nx, ny
+        elif op == "S":
+            x2, y2, nx, ny = a
+            if rel:
+                x2, y2, nx, ny = x + x2, y + y2, x + nx, y + ny
+            if ctrl_x is None or ctrl_y is None:
+                x1, y1 = x, y
+            else:
+                x1, y1 = 2 * x - ctrl_x, 2 * y - ctrl_y
+            path.cubicTo(x1 * k, y1 * k, x2 * k, y2 * k, nx * k, ny * k)
+            ctrl_x, ctrl_y = x2, y2
+            x, y = nx, ny
+    return path
+
+
+def gear_pm(d: int = 18, color: str = "#e0e0e0") -> QPixmap:
+    """Material "settings" cog, filled."""
     pm = QPixmap(d, d)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(160, 160, 160))
-    pen.setWidthF(1.75)
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    cx, cy = d / 2.0, d / 2.0
-    p.translate(cx, cy)
-    hub_r = 3.25
-    p.drawEllipse(QRectF(-hub_r, -hub_r, 2 * hub_r, 2 * hub_r))
-    n = 8
-    tooth_len = 3.4
-    base_r = hub_r + 0.4
-    for i in range(n):
-        ang = (i * 2 * math.pi / n) - math.pi / 2
-        x0 = base_r * math.cos(ang)
-        y0 = base_r * math.sin(ang)
-        x1 = (base_r + tooth_len) * math.cos(ang)
-        y1 = (base_r + tooth_len) * math.sin(ang)
-        p.drawLine(QPointF(x0, y0), QPointF(x1, y1))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawPath(svg_path(_GEAR_PATH, float(d)))
     p.end()
     return pm
 
 
-def gear_icon() -> QIcon:
-    return QIcon(gear_pm(16))
+def gear_icon(d: int = 18) -> QIcon:
+    return QIcon(gear_pm(d))
 
 
-def tag_icon_pm(d: int = 16) -> QPixmap:
-    """Price tag (Tagging Mode); line art to match sort / gear micro-icons."""
-    d = max(12, int(d))
-    pm = QPixmap(d, d)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(160, 160, 160))
-    pen.setWidthF(max(1.2, d * 0.1))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-
-    margin = d * 0.14
-    usable = max(4.0, d - 2.0 * margin)
-    # Elongated pentagon: flat left edge, chamfered right forming a point (hole near tip).
-    w_tag = usable * 0.72
-    h_tag = usable * 0.40
-    chamfer = w_tag * 0.38
-
-    cx, cy = d / 2.0, d / 2.0
-    p.translate(cx, cy)
-    p.rotate(45.0)
-    p.translate(-w_tag / 2.0, -h_tag / 2.0)
-
-    outline = QPainterPath()
-    outline.moveTo(0.0, 0.0)
-    outline.lineTo(w_tag - chamfer, 0.0)
-    outline.lineTo(w_tag, h_tag / 2.0)
-    outline.lineTo(w_tag - chamfer, h_tag)
-    outline.lineTo(0.0, h_tag)
-    outline.closeSubpath()
-    p.drawPath(outline)
-
-    hole_r = max(0.75, h_tag * 0.17)
-    hole_cx = w_tag - chamfer * 0.52
-    hole_cy = h_tag / 2.0
-    p.drawEllipse(QRectF(hole_cx - hole_r, hole_cy - hole_r, 2.0 * hole_r, 2.0 * hole_r))
-    p.end()
-    return pm
 
 
-def tag_icon() -> QIcon:
-    """Tagging Mode: 16px + 32px pixmap variants for sharp display on hidpi."""
-    ic = QIcon()
-    ic.addPixmap(tag_icon_pm(16))
-    ic.addPixmap(tag_icon_pm(32))
-    return ic
-
-
-def scan_tags_icon_pm(d: int = 16) -> QPixmap:
-    """Viewfinder corners (scan folder for embedded tags)."""
-    d = max(12, int(d))
-    pm = QPixmap(d, d)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor(160, 160, 160))
-    pen.setWidthF(max(1.2, d * 0.11))
-    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    inset = d * 0.18
-    arm = d * 0.28
-    right = d - inset
-    bottom = d - inset
-    # top-left
-    p.drawLine(QPointF(inset, inset + arm), QPointF(inset, inset))
-    p.drawLine(QPointF(inset, inset), QPointF(inset + arm, inset))
-    # top-right
-    p.drawLine(QPointF(right - arm, inset), QPointF(right, inset))
-    p.drawLine(QPointF(right, inset), QPointF(right, inset + arm))
-    # bottom-left
-    p.drawLine(QPointF(inset, bottom - arm), QPointF(inset, bottom))
-    p.drawLine(QPointF(inset, bottom), QPointF(inset + arm, bottom))
-    # bottom-right
-    p.drawLine(QPointF(right - arm, bottom), QPointF(right, bottom))
-    p.drawLine(QPointF(right, bottom - arm), QPointF(right, bottom))
-    p.end()
-    return pm
-
-
-def scan_tags_icon() -> QIcon:
-    ic = QIcon()
-    ic.addPixmap(scan_tags_icon_pm(12))
-    ic.addPixmap(scan_tags_icon_pm(24))
-    return ic
 
 
 def no_sign_pm(d: int = 14) -> QPixmap:
@@ -217,3 +207,32 @@ QToolButton:checked:hover {
 }
 """
 )
+
+
+def left_panel_pm(d: int = 18, color: str = "#e0e0e0") -> QPixmap:
+    """"Open panel, left": a rounded frame whose left column is filled solid.
+
+    Drawn as an outer rounded rect minus an inner rectangle, which is exactly
+    how the source glyph is built — the remainder is the border plus the solid
+    left column.
+    """
+    pm = QPixmap(d, d)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    k = d / 32.0  # the glyph is authored on a 32x32 grid
+
+    outer = QPainterPath()
+    outer.addRoundedRect(2 * k, 4 * k, 28 * k, 24 * k, 2 * k, 2 * k)
+    hole = QPainterPath()
+    hole.addRect(12 * k, 6 * k, 16 * k, 20 * k)
+
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawPath(outer.subtracted(hole))
+    p.end()
+    return pm
+
+
+def left_panel_icon(d: int = 18) -> QIcon:
+    return QIcon(left_panel_pm(d))

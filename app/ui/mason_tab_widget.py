@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QTabBar, QTabWidget, QVBoxLayout, QWidget
 
 
@@ -146,12 +146,22 @@ class MasonTabWidget(QTabWidget):
 
 
 class TabBarGapDividerLine(QWidget):
-    """One-pixel-tall line with a gap under the tab bar's current tab (e.g. preview header)."""
+    """Seam line under a tab bar, broken by the current tab.
+
+    At the current tab's bottom corners the line curls up into the tab's side
+    borders on a small radius, so the tab reads as standing in front of the seam
+    rather than stopping just short of it. Drawing those elbows needs pixels
+    *above* the seam, so the widget is ``CORNER_R + 1`` tall and is positioned by
+    its owner to overlap the tab row, with the seam on its bottom edge.
+    """
+
+    CORNER_R = 3  # matches the tabs' border-top-*-radius
+    TAB_RIGHT_MARGIN = 2  # QSS margin-right, i.e. tabRect is wider than the paint
 
     def __init__(self, tab_bar: QTabBar, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._tb = tab_bar
-        self.setFixedHeight(1)
+        self.setFixedHeight(self.CORNER_R + 1)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         tab_bar.currentChanged.connect(lambda *_: self.update())
         tab_bar.tabMoved.connect(lambda *_: self.update())
@@ -173,36 +183,66 @@ class TabBarGapDividerLine(QWidget):
         super().resizeEvent(event)
         self.update()
 
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        w = self.width()
-        if w <= 0:
-            return
+    def _current_tab_edges(self) -> tuple[float, float] | None:
+        """Centres of the current tab's painted side borders, in local x.
+
+        ``None`` when no tab owns the seam and it should run unbroken.
+        """
         tb = self._tb
-        n = tb.count()
-        idx = tb.currentIndex()
-        p = QPainter(self)
-        p.setPen(QPen(QColor("#666666")))
         # Match preview tab styling: no "selected" tab when browsing a non-favorite folder.
         if tb.property("mason_browse_non_favorite"):
-            p.drawLine(0, 0, w, 0)
-            p.end()
-            return
-        if n <= 1 or idx < 0:
-            p.drawLine(0, 0, w, 0)
-            p.end()
-            return
-        r = tb.tabRect(idx)
+            return None
+        if tb.count() <= 1 or tb.currentIndex() < 0:
+            return None
+        r = tb.tabRect(tb.currentIndex())
         if not r.isValid():
-            p.drawLine(0, 0, w, 0)
+            return None
+        # tabRect spans the tab's margin box; the border is drawn inside it.
+        left = self.mapFromGlobal(tb.mapToGlobal(QPoint(r.left(), r.bottom()))).x()
+        right = self.mapFromGlobal(
+            tb.mapToGlobal(QPoint(r.right() - self.TAB_RIGHT_MARGIN, r.bottom()))
+        ).x()
+        if right <= left:
+            return None
+        return float(left) + 0.5, float(right) + 0.5
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        w = float(self.width())
+        if w <= 0:
+            return
+        y = float(self.height()) - 0.5  # centre of the bottom row
+        rad = float(self.CORNER_R)
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#666666"))
+        pen.setWidthF(1.0)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        edges = self._current_tab_edges()
+        if edges is None:
+            p.drawLine(QPointF(0.0, y), QPointF(w, y))
             p.end()
             return
-        left_x = self.mapFromGlobal(tb.mapToGlobal(QPoint(r.left(), r.bottom()))).x()
-        right_x = self.mapFromGlobal(tb.mapToGlobal(QPoint(r.right() + 1, r.bottom()))).x()
-        left_w = max(0, min(left_x, w))
-        rs = max(0, min(right_x, w))
-        if left_w > 0:
-            p.drawLine(0, 0, left_w, 0)
-        if w > rs:
-            p.drawLine(rs, 0, w, 0)
+
+        lx, rx = edges
+        # Left run, curling up into the tab's left border. Both arcs sweep 90°
+        # counter-clockwise, which in Qt's angle system rounds the inside of the
+        # corner the same way the tab's top corners are rounded.
+        if lx - rad > 0.0:
+            left = QPainterPath()
+            left.moveTo(0.0, y)
+            left.lineTo(lx - rad, y)
+            left.arcTo(QRectF(lx - 2 * rad, y - 2 * rad, 2 * rad, 2 * rad), 270.0, 90.0)
+            p.drawPath(left)
+
+        # Down from the tab's right border into the right run.
+        if rx + rad < w:
+            right = QPainterPath()
+            right.moveTo(rx, y - rad)
+            right.arcTo(QRectF(rx, y - 2 * rad, 2 * rad, 2 * rad), 180.0, 90.0)
+            right.lineTo(w, y)
+            p.drawPath(right)
         p.end()

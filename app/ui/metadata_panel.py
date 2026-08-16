@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.core.metadata_reader import read_metadata_summary
-from app.core.tags_store import TagsStore
 from app.ui.mason_tab_widget import MasonPanelHeader
 
 
@@ -28,16 +27,14 @@ class MetadataPanel(QWidget):
         ("File Format", "file_format"),
         ("Color Mode", "color_mode"),
     )
-    _ROWS_TAGS: tuple[tuple[str, str], ...] = (("Tags", "tags"),)
     _ROWS_EXTRA: tuple[tuple[str, str], ...] = (
         ("Rating", "rating"),
         ("Authors", "authors"),
         ("Comments", "comments"),
     )
 
-    def __init__(self, store: TagsStore, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._store = store
         self.setObjectName("metadataPanel")
 
         scroll = QScrollArea()
@@ -61,7 +58,7 @@ class MetadataPanel(QWidget):
 
         self._value_labels: dict[str, QLabel] = {}
         row = 0
-        for label_text, key in self._ROWS_MAIN + self._ROWS_TAGS:
+        for label_text, key in self._ROWS_MAIN:
             row = self._add_metadata_row(grid, row, label_text, key)
         row = self._add_section_divider(grid, row)
         for label_text, key in self._ROWS_EXTRA:
@@ -108,7 +105,7 @@ class MetadataPanel(QWidget):
         vl = QLabel("—")
         vl.setObjectName("metadataValue")
         vl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        wrap = key in ("filename", "tags", "authors", "comments")
+        wrap = key in ("filename", "authors", "comments")
         vl.setWordWrap(wrap)
         vl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         vl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -154,5 +151,3 @@ class MetadataPanel(QWidget):
         ):
             if key in self._value_labels:
                 self._value_labels[key].setText(summary.get(key, "—"))
-        names = [name for _tid, name in self._store.get_tags_for_image(path)]
-        self._value_labels["tags"].setText(", ".join(names) if names else "—")

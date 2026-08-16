@@ -21,39 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from app.core import file_scanner, settings as settings_mod, sort_filter
-from app.core.tags_store import TagsStore
 from app.core.thumbnail_cache import ThumbnailCache
 from app.ui.context_menus import style_context_menu
-from app.ui.filter_panel import FilterPanel
 from app.ui.folder_panel import FolderPanel
 from app.ui.info_bar import InfoBar
-from app.ui.tags_panel import TagsPanel
 from app.ui.metadata_panel import MetadataPanel
 from app.ui.preview_panel import PreviewPanel
 from app.ui.settings_dialog import SettingsDialog
 from app.ui.toolbar import MainToolbar
 from app.ui import drop_import, image_actions
-
-
-class _EmbeddedTagScanThread(QThread):
-    """Scans image files for embedded keywords without touching ``TagsStore`` (thread-safe)."""
-
-    scanned = Signal(list)
-
-    def __init__(self, paths: list[str]) -> None:
-        super().__init__()
-        self._paths = paths
-
-    def run(self) -> None:  # type: ignore[override]
-        from app.core.tags_importer import scan_paths_for_embedded_tags
-
-        if self.isInterruptionRequested():
-            return
-        pairs = scan_paths_for_embedded_tags(
-            self._paths, should_abort=lambda: self.isInterruptionRequested()
-        )
-        if not self.isInterruptionRequested():
-            self.scanned.emit(pairs)
 
 
 class MainWindow(QMainWindow):
@@ -74,7 +50,6 @@ class MainWindow(QMainWindow):
 
     def _init_content(self) -> None:
         self._settings = settings_mod.load_settings()
-        self._store = TagsStore()
         self._thumb_cache = ThumbnailCache(self)
 
         self._folder = self._settings.get("last_folder") or str(Path.home())
@@ -87,19 +62,16 @@ class MainWindow(QMainWindow):
         if self._locked_mode and self._locked_mode not in settings_mod.KNOWN_LAYOUT_MODES:
             self._locked_mode = None
         self._pending_thumb_size: int | None = None
-        self._tag_import_thread: QThread | None = None
-        self._tag_import_generation = 0
+        self._left_panel_width = 260
         self._thumb_size_timer = QTimer(self)
         self._thumb_size_timer.setSingleShot(True)
         self._thumb_size_timer.timeout.connect(self._apply_pending_thumb_size)
 
         self._toolbar = MainToolbar()
         self._folder_panel = FolderPanel()
-        self._metadata = MetadataPanel(self._store)
+        self._metadata = MetadataPanel()
         self._preview = PreviewPanel(self._thumb_cache)
         self._info = InfoBar()
-        self._tags = TagsPanel(self._store)
-        self._filter = FilterPanel(self._store)
 
         self._setup_layout()
         self._apply_stylesheet()
@@ -122,12 +94,16 @@ class MainWindow(QMainWindow):
         self._preview.apply_prefs(thumb_px)
         self._preview.set_layout_mode(start_mode)
         self._preview.set_sort(
-            str(self._settings.get("sort_by") or "name"),
-            bool(self._settings.get("sort_ascending", True)),
+            str(self._settings.get("sort_by") or "date_created"),
+            bool(self._settings.get("sort_ascending", False)),
         )
 
         self._folder_panel.select_path(self._folder)
         self._preview.set_import_drop_folder(self._folder)
+
+        left_visible = bool(self._settings.get("left_panel_visible", True))
+        self._toolbar.set_left_panel_shown(left_visible)
+        self._apply_left_panel_visible(left_visible)
 
         geo = self._settings.get("window_geometry")
         if isinstance(geo, dict) and all(k in geo for k in ("x", "y", "w", "h")):
@@ -171,17 +147,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _splitter_size_lists_valid(m: list[int], l: list[int], r: list[int]) -> bool:
+    def _splitter_size_lists_valid(m: list[int], l: list[int]) -> bool:
         return (
-            len(m) == 3
+            len(m) == 2
             and all(x > 0 for x in m)
             and sum(m) > 0
             and len(l) == 2
             and all(x > 0 for x in l)
             and sum(l) > 0
-            and len(r) == 2
-            and all(x > 0 for x in r)
-            and sum(r) > 0
         )
 
     @staticmethod
@@ -206,8 +179,8 @@ class MainWindow(QMainWindow):
         return out
 
     def _try_restore_splitters_from_qt_state(self, entry: dict[str, Any]) -> bool:
-        keys = ("qt_main", "qt_left", "qt_right")
-        splitters = (self._split_main, self._split_left, self._split_right)
+        keys = ("qt_main", "qt_left")
+        splitters = (self._split_main, self._split_left)
         backup = [bytes(sp.saveState()) for sp in splitters]
         blobs: list[QByteArray] = []
         for k in keys:
@@ -224,56 +197,77 @@ class MainWindow(QMainWindow):
                 sp.restoreState(QByteArray(b))
         return ok
 
-    def _splitter_lists_for_mode(self, mode: str) -> tuple[list[int] | None, list[int] | None, list[int] | None]:
+    def _splitter_lists_for_mode(self, mode: str) -> tuple[list[int] | None, list[int] | None]:
+        """Sizes saved for *mode*.
+
+        Layouts written before the right panel was removed carry three main
+        sizes; those simply fail the length check and fall back to defaults.
+        """
         sbm = self._settings.get("splitters_by_mode")
         if not isinstance(sbm, dict):
-            return None, None, None
+            return None, None
         entry = sbm.get(mode)
         if not isinstance(entry, dict):
-            return None, None, None
+            return None, None
         sm = entry.get("splitter_main")
         sl = entry.get("splitter_left")
-        sr = entry.get("splitter_right")
         if (
             isinstance(sm, list)
-            and len(sm) == 3
+            and len(sm) == 2
             and sum(sm) > 0
             and isinstance(sl, list)
             and len(sl) == 2
             and sum(sl) > 0
-            and isinstance(sr, list)
-            and len(sr) == 2
-            and sum(sr) > 0
         ):
-            return [int(sm[0]), int(sm[1]), int(sm[2])], [int(sl[0]), int(sl[1])], [int(sr[0]), int(sr[1])]
-        return None, None, None
+            return [int(sm[0]), int(sm[1])], [int(sl[0]), int(sl[1])]
+        return None, None
 
     def _store_splitters_for_mode(self, mode: str) -> None:
         m = [int(x) for x in self._split_main.sizes()]
         l = [int(x) for x in self._split_left.sizes()]
-        r = [int(x) for x in self._split_right.sizes()]
-        if not self._splitter_size_lists_valid(m, l, r):
+        if not self._splitter_size_lists_valid(m, l):
             return
         raw = self._settings.get("splitters_by_mode")
         sbm: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
         sbm[mode] = {
             "splitter_main": m,
             "splitter_left": l,
-            "splitter_right": r,
             "qt_main": bytes(self._split_main.saveState()).hex(),
             "qt_left": bytes(self._split_left.saveState()).hex(),
-            "qt_right": bytes(self._split_right.saveState()).hex(),
         }
         self._settings["splitters_by_mode"] = sbm
 
     def _on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self._applying_splitter_sizes:
             return
+        # Remember the width only while the panel is actually on screen, or a
+        # collapse would overwrite it with zero and lose the restore target.
+        if self._split_left.isVisible():
+            sizes = self._split_main.sizes()
+            if sizes and sizes[0] > 0:
+                self._left_panel_width = sizes[0]
         self._store_splitters_for_mode(self._splitters_layout_mode)
+
+    def _apply_left_panel_visible(self, shown: bool) -> None:
+        """Collapse or restore the folder/metadata column as one unit."""
+        if not shown:
+            sizes = self._split_main.sizes()
+            if sizes and sizes[0] > 0:
+                self._left_panel_width = sizes[0]
+            self._split_left.setVisible(False)
+        else:
+            self._split_left.setVisible(True)
+            total = max(1, self._split_main.width())
+            width = min(max(120, self._left_panel_width), max(120, total - 160))
+            self._split_main.setSizes([width, max(160, total - width)])
+        self._settings["left_panel_visible"] = bool(shown)
+
+    def _on_left_panel_toggled(self, shown: bool) -> None:
+        self._apply_left_panel_visible(shown)
 
     def _apply_splitter_sizes(self, mode: str | None = None) -> None:
         use_mode = mode if mode is not None else self._splitters_layout_mode
-        sm, sl, sr = self._splitter_lists_for_mode(use_mode)
+        sm, sl = self._splitter_lists_for_mode(use_mode)
         entry: dict[str, Any] | None = None
         sbm = self._settings.get("splitters_by_mode")
         if isinstance(sbm, dict):
@@ -281,51 +275,35 @@ class MainWindow(QMainWindow):
             if isinstance(raw_e, dict):
                 entry = raw_e
 
-        splitters = (self._split_main, self._split_left, self._split_right)
+        splitters = (self._split_main, self._split_left)
         self._applying_splitter_sizes = True
         for sp in splitters:
             sp.blockSignals(True)
         try:
             total_w = max(1, self._split_main.width())
             total_h_l = max(1, self._split_left.height())
-            total_h_r = max(1, self._split_right.height())
 
             restored = False
             if (
                 entry is not None
                 and self._split_main.width() > 160
                 and self._split_left.height() > 100
-                and self._split_right.height() > 100
             ):
                 restored = self._try_restore_splitters_from_qt_state(entry)
 
-            if not restored and sm is not None and sl is not None and sr is not None:
-                main_fit = self._fit_splitter_sizes(sm, total_w, floor_each=48)
-                left_fit = self._fit_splitter_sizes(sl, total_h_l, floor_each=64)
-                right_fit = self._fit_splitter_sizes(sr, total_h_r, floor_each=64)
-                self._split_main.setSizes(main_fit)
-                self._split_left.setSizes(left_fit)
-                self._split_right.setSizes(right_fit)
+            if not restored and sm is not None and sl is not None:
+                self._split_main.setSizes(self._fit_splitter_sizes(sm, total_w, floor_each=48))
+                self._split_left.setSizes(self._fit_splitter_sizes(sl, total_h_l, floor_each=64))
             elif not restored:
-                min_side = 72
-                min_mid = 80
-                left_w = max(min_side, int(total_w * 0.17))
-                right_w = max(min_side, int(total_w * 0.19))
-                mid = total_w - left_w - right_w
+                min_side, min_mid = 72, 80
+                left_w = max(min_side, int(total_w * 0.20))
+                mid = total_w - left_w
                 if mid < min_mid:
-                    deficit = min_mid - mid
-                    dl = min(deficit // 2 + deficit % 2, max(0, left_w - 48))
-                    left_w -= dl
-                    deficit -= dl
-                    dr = min(deficit, max(0, right_w - 48))
-                    right_w -= dr
-                    mid = total_w - left_w - right_w
-                self._split_main.setSizes([left_w, max(48, mid), right_w])
+                    left_w = max(48, total_w - min_mid)
+                    mid = total_w - left_w
+                self._split_main.setSizes([left_w, max(48, mid)])
                 self._split_left.setSizes(
                     [max(120, int(total_h_l * 0.62)), max(80, int(total_h_l * 0.38))]
-                )
-                self._split_right.setSizes(
-                    [max(100, int(total_h_r * 0.55)), max(72, int(total_h_r * 0.45))]
                 )
         finally:
             for sp in splitters:
@@ -354,17 +332,12 @@ class MainWindow(QMainWindow):
         self._split_main = QSplitter(Qt.Orientation.Horizontal)
         self._split_main.setChildrenCollapsible(True)
         self._split_left = QSplitter(Qt.Orientation.Vertical)
-        self._split_right = QSplitter(Qt.Orientation.Vertical)
 
         self._split_left.addWidget(self._folder_panel)
         self._split_left.addWidget(self._metadata)
 
-        self._split_right.addWidget(self._tags)
-        self._split_right.addWidget(self._filter)
-
         self._split_main.addWidget(self._split_left)
         self._split_main.addWidget(center_widget)
-        self._split_main.addWidget(self._split_right)
 
         root.addWidget(self._split_main, stretch=1)
 
@@ -471,20 +444,16 @@ class MainWindow(QMainWindow):
         self._preview.favorites_order_changed.connect(self._on_preview_favorites_reordered)
         self._preview.selection_changed.connect(self._on_preview_selection)
         self._info.thumbnail_size_changed.connect(self._on_thumb_size)
-        self._tags.tags_changed.connect(self._on_tags_changed)
-        self._tags.tag_order_changed.connect(self._filter.reload_tags)
-        self._tags.scan_tags_requested.connect(self._on_scan_tags_requested)
-        self._filter.filter_changed.connect(self._refresh_paths)
         self._preview.fullscreen_requested.connect(self._open_fullscreen)
         self._preview.delete_requested.connect(self._delete_files)
         self._preview.image_context_menu_requested.connect(self._on_preview_image_context_menu)
         self._preview.open_in_photoshop_requested.connect(self._open_in_photoshop)
         self._toolbar.settings_clicked.connect(self._on_settings)
+        self._toolbar.left_panel_toggled.connect(self._on_left_panel_toggled)
         self._preview.set_import_drop_handler(self._handle_preview_import_drop)
 
         self._split_main.splitterMoved.connect(self._on_splitter_moved)
         self._split_left.splitterMoved.connect(self._on_splitter_moved)
-        self._split_right.splitterMoved.connect(self._on_splitter_moved)
 
         app = QGuiApplication.instance()
         if app is not None:
@@ -499,10 +468,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._rescan_current_folder)
 
     def _wire_shortcuts(self) -> None:
-        rename_tag = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
-        rename_tag.setContext(Qt.ShortcutContext.WindowShortcut)
-        rename_tag.activated.connect(self._tags.rename_focused_tag)
-
         refresh_folder = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
         refresh_folder.setContext(Qt.ShortcutContext.WindowShortcut)
         refresh_folder.activated.connect(self._rescan_current_folder)
@@ -514,12 +479,6 @@ class MainWindow(QMainWindow):
     def _visible_paths(self) -> list[str]:
         paths = list(self._raw_paths)
         paths = sort_filter.filter_by_search(paths, self._toolbar.search_query())
-        paths = sort_filter.filter_by_tags(
-            paths,
-            self._filter.selected_tag_ids(),
-            self._store,
-            self._filter.tag_match_mode(),
-        )
         paths = sort_filter.sort_paths(paths, self._preview.sort_key(), self._preview.ascending())
         return paths
 
@@ -593,7 +552,6 @@ class MainWindow(QMainWindow):
         self._path_mtimes = file_scanner.snapshot_mtimes(self._raw_paths)
         self._selected_image = None
         self._metadata.clear()
-        self._sync_tags_selection()
         self._refresh_paths()
 
     def _apply_thumbnail_content_changes(self, changed: set[str]) -> None:
@@ -627,58 +585,6 @@ class MainWindow(QMainWindow):
         changed = file_scanner.paths_with_changed_mtime(new_paths, self._path_mtimes)
         self._apply_thumbnail_content_changes(changed)
 
-    def _on_scan_tags_requested(self) -> None:
-        if not self._raw_paths:
-            return
-        self._tags.set_scan_busy(True)
-        self._start_embedded_tag_import(list(self._raw_paths))
-
-    def _start_embedded_tag_import(self, paths: list[str]) -> None:
-        """Merge embedded file keywords into SQLite without blocking the UI thread."""
-        self._tag_import_generation += 1
-        gen = self._tag_import_generation
-        old = self._tag_import_thread
-        if old is not None:
-            old.requestInterruption()
-            try:
-                old.scanned.disconnect()
-            except TypeError:
-                pass
-            old.deleteLater()
-            self._tag_import_thread = None
-        th = _EmbeddedTagScanThread(paths)
-        self._tag_import_thread = th
-        th.scanned.connect(lambda pairs, g=gen: self._on_embedded_tag_scan_finished(pairs, g))
-        th.finished.connect(self._on_embedded_tag_thread_finished)
-        th.start()
-
-    def _on_embedded_tag_thread_finished(self) -> None:
-        th = self.sender()
-        if th is self._tag_import_thread:
-            self._tag_import_thread = None
-        self._tags.set_scan_busy(False)
-
-    def _on_embedded_tag_scan_finished(self, pairs: object, generation: int) -> None:
-        try:
-            if generation != self._tag_import_generation:
-                return
-            if not isinstance(pairs, list):
-                return
-            from app.core.tags_importer import apply_embedded_tags_to_store
-
-            changed = apply_embedded_tags_to_store(
-                self._store, cast(list[tuple[str, list[str]]], pairs)
-            )
-            self._filter.reload_tags()
-            self._tags.reload_tree_from_store()
-            if changed and self._filter.selected_tag_ids():
-                self._refresh_paths()
-            elif self._selected_image:
-                self._metadata.show_path(self._selected_image)
-                self._sync_tags_selection()
-        finally:
-            self._tags.set_scan_busy(False)
-
     def _refresh_paths(self) -> None:
         """Re-sort/filter the current folder, preserving the current image selection."""
         paths = self._visible_paths()
@@ -687,20 +593,7 @@ class MainWindow(QMainWindow):
         if self._selected_image and self._selected_image not in paths:
             self._selected_image = None
             self._metadata.clear()
-            self._tags.set_selection([], None)
-        elif self._selected_image:
-            self._sync_tags_selection()
         self._preview.sync_favorite_tab_for_path(self._folder)
-
-    def _sync_tags_selection(self) -> None:
-        primary = self._selected_image
-        if not primary:
-            self._tags.set_selection([], None)
-            return
-        paths = self._preview.selected_paths()
-        if not paths:
-            paths = [primary]
-        self._tags.set_selection(paths, primary)
 
     # ------------------------------------------------------------------
     # Handlers
@@ -710,12 +603,10 @@ class MainWindow(QMainWindow):
         if not path:
             self._selected_image = None
             self._metadata.clear()
-            self._tags.set_selection([], None)
             self._preview.take_preview_focus()
             return
         self._selected_image = path
         self._metadata.show_path(path)
-        self._sync_tags_selection()
         self._preview.take_preview_focus()
 
     def _on_layout_mode(self, mode: str) -> None:
@@ -739,10 +630,6 @@ class MainWindow(QMainWindow):
             return
         self._preview.set_thumbnail_size(self._pending_thumb_size)
         self._pending_thumb_size = None
-
-    def _on_tags_changed(self) -> None:
-        self._filter.reload_tags()
-        self._refresh_paths()
 
     def _on_settings(self) -> None:
         dlg = SettingsDialog(
@@ -774,17 +661,9 @@ class MainWindow(QMainWindow):
         menu.addAction("Copy Image", lambda: self._copy_image(path))
         menu.addAction("Locate File", lambda: self._locate_file(path))
         menu.addAction("Open In Photoshop", lambda: self._open_in_photoshop(path))
-        menu.addAction("Clear Tags", lambda: self._clear_tags_for_image(path))
         menu.addAction("Rename…", lambda: self._rename_file(path))
         menu.addAction("Delete…", lambda: self._delete_files([path]))
         menu.exec(global_pos)
-
-    def _clear_tags_for_image(self, path: str) -> None:
-        self._store.clear_tags_for_image(path)
-        self._on_tags_changed()
-        self._tags.sync_checks_from_store()
-        if self._selected_image:
-            self._metadata.show_path(self._selected_image)
 
     def _locate_file(self, path: str) -> None:
         err = image_actions.locate_file_in_explorer(path)
@@ -825,10 +704,6 @@ class MainWindow(QMainWindow):
             return
 
         new_str = str(new_path.resolve())
-        try:
-            self._store.rename_image_path(str(old_res), new_str)
-        except Exception:
-            pass
 
         for i, p in enumerate(self._raw_paths):
             try:
@@ -876,14 +751,12 @@ class MainWindow(QMainWindow):
         fv.closed.connect(self._on_fullscreen_closed)
 
     def _on_fullscreen_nav(self, path: str) -> None:
-        """Keep metadata / tags panels in sync while navigating in fullscreen."""
+        """Keep the metadata panel in sync while navigating in fullscreen."""
         self._selected_image = path
         self._metadata.show_path(path)
-        self._tags.set_selection([path], path)
 
     def _on_fullscreen_closed(self) -> None:
         self._fullscreen_view = None
-        self._sync_tags_selection()
 
     # ------------------------------------------------------------------
     # File deletion
@@ -924,13 +797,6 @@ class MainWindow(QMainWindow):
                 deleted.add(path)
             except OSError as e:
                 QMessageBox.warning(self, "Delete failed", f"{Path(path).name}: {e}")
-            # Clean up SQLite tag assignments
-            try:
-                norm = str(Path(path).resolve())
-                for tid, _ in self._store.get_tags_for_image(norm):
-                    self._store.remove_tag_from_image(norm, tid)
-            except Exception:
-                pass
             # Clean up dimension cache entry
             try:
                 from app.core import image_cache as _ic
@@ -948,15 +814,9 @@ class MainWindow(QMainWindow):
         if self._selected_image in deleted:
             self._selected_image = None
             self._metadata.clear()
-            self._tags.set_selection([], None)
         self._refresh_paths()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
-        self._tag_import_generation += 1
-        t = self._tag_import_thread
-        if t is not None:
-            t.requestInterruption()
-            t.wait(3000)
         self._save_settings()
         self._thumb_cache.clear_pending()
         from PySide6.QtCore import QThreadPool
@@ -976,9 +836,9 @@ class MainWindow(QMainWindow):
             "drop_save_format": str(self._settings.get("drop_save_format") or "webp"),
             "favorite_folders": self._folder_panel.favorites_for_settings(),
             "confirm_delete_files": bool(self._settings.get("confirm_delete_files", True)),
+            "left_panel_visible": bool(self._settings.get("left_panel_visible", True)),
             "window_geometry": {"x": g.x(), "y": g.y(), "w": g.width(), "h": g.height()},
             "splitter_main": self._split_main.sizes(),
             "splitter_left": self._split_left.sizes(),
-            "splitter_right": self._split_right.sizes(),
             "splitters_by_mode": self._settings.get("splitters_by_mode") or {},
         })

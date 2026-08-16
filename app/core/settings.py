@@ -30,22 +30,26 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "last_folder": "",
     "thumbnail_size": 128,
     "layout_mode": "essential",
-    "sort_by": "name",
-    "sort_ascending": True,
+    "sort_by": "date_created",
+    "sort_ascending": False,  # newest first
     "tile_background": True,
     "window_geometry": None,  # dict x,y,w,h or None
     "splitter_main": None,
     "splitter_left": None,
-    "splitter_right": None,
-    "splitters_by_mode": {},  # layout_mode -> {splitter_main, splitter_left, splitter_right}
+    "splitters_by_mode": {},  # layout_mode -> {splitter_main, splitter_left}
     "photoshop_exe": "",
     "drop_save_format": "webp",
     "favorite_folders": [],
     "confirm_delete_files": True,
+    "left_panel_visible": True,
 }
 
 # Must match app.ui.toolbar.MainToolbar.MODES (avoid importing Qt from here).
-KNOWN_LAYOUT_MODES: tuple[str, ...] = ("essential", "filmstrip", "list")
+KNOWN_LAYOUT_MODES: tuple[str, ...] = ("essential",)
+
+# Must stay in step with SortControlBar.SORT_LABELS; "size" and "type" were
+# dropped, so saved settings naming them are rewritten to the default.
+KNOWN_SORT_KEYS: tuple[str, ...] = ("date_created", "date_modified", "name", "random")
 
 
 def _validate_splitter_list(raw: Any, expected_len: int) -> list[int] | None:
@@ -82,12 +86,13 @@ def _sanitize_splitters_by_mode(raw: Any) -> dict[str, dict[str, Any]]:
         ks = str(k)
         if ks not in modes or not isinstance(v, dict):
             continue
-        sm = _validate_splitter_list(v.get("splitter_main"), 3)
+        # Two panes since the tag/filter column was removed; layouts saved
+        # with three main sizes fail this check and fall back to defaults.
+        sm = _validate_splitter_list(v.get("splitter_main"), 2)
         sl = _validate_splitter_list(v.get("splitter_left"), 2)
-        sr = _validate_splitter_list(v.get("splitter_right"), 2)
-        if sm is not None and sl is not None and sr is not None:
-            entry: dict[str, Any] = {"splitter_main": sm, "splitter_left": sl, "splitter_right": sr}
-            for qk in ("qt_main", "qt_left", "qt_right"):
+        if sm is not None and sl is not None:
+            entry: dict[str, Any] = {"splitter_main": sm, "splitter_left": sl}
+            for qk in ("qt_main", "qt_left"):
                 qh = _sanitize_qt_splitter_state_hex(v.get(qk))
                 if qh is not None:
                     entry[qk] = qh
@@ -123,15 +128,15 @@ def _sanitize_settings(data: dict[str, Any]) -> dict[str, Any]:
             else:
                 out["window_geometry"] = {"x": x, "y": y, "w": w, "h": h}
 
-    for key, expected_len in (("splitter_main", 3), ("splitter_left", 2), ("splitter_right", 2)):
+    for key, expected_len in (("splitter_main", 2), ("splitter_left", 2)):
         out[key] = _validate_splitter_list(out.get(key), expected_len)
+    out.pop("splitter_right", None)
 
     sbm = _sanitize_splitters_by_mode(out.get("splitters_by_mode"))
     lm = out.get("splitter_main")
     ll = out.get("splitter_left")
-    lr = out.get("splitter_right")
-    if lm is not None and ll is not None and lr is not None:
-        seed = {"splitter_main": list(lm), "splitter_left": list(ll), "splitter_right": list(lr)}
+    if lm is not None and ll is not None:
+        seed = {"splitter_main": list(lm), "splitter_left": list(ll)}
         for m in KNOWN_LAYOUT_MODES:
             if m not in sbm:
                 sbm[m] = {k: list(v) for k, v in seed.items()}
@@ -143,6 +148,10 @@ def _sanitize_settings(data: dict[str, Any]) -> dict[str, Any]:
         out["layout_mode"] = str(DEFAULT_SETTINGS["layout_mode"])
     else:
         out["layout_mode"] = lm_mode
+
+    sort_by = str(out.get("sort_by", DEFAULT_SETTINGS["sort_by"])).strip().lower()
+    out["sort_by"] = sort_by if sort_by in KNOWN_SORT_KEYS else str(DEFAULT_SETTINGS["sort_by"])
+    out["sort_ascending"] = bool(out.get("sort_ascending", DEFAULT_SETTINGS["sort_ascending"]))
 
     v = out.get("confirm_delete_files", DEFAULT_SETTINGS["confirm_delete_files"])
     if isinstance(v, bool):

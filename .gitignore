@@ -36,6 +36,7 @@ Thumbs.db
 # Local / secrets (keep out of git)
 .env
 .env.*
+.wrangler/
 
 # Optional: Cursor local state (uncomment if you prefer not to track)
 # .cursor/

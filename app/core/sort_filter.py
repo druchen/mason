@@ -7,12 +7,8 @@ import os
 import secrets
 from pathlib import Path
 
-from typing import Literal
-
-from app.core.tags_store import TagsStore
 
 SortKey = str
-TagMatchMode = Literal["all", "any"]
 
 # Random sort: path-only BLAKE2b until ``bump_random_sort_seed()`` runs (e.g. user picks Random
 # in the UI); then a keyed digest so each new pick can reshuffle.
@@ -25,12 +21,11 @@ def bump_random_sort_seed() -> None:
     _random_sort_key = secrets.token_bytes(8)
 
 
-def _stat_tuple(path: str) -> tuple[float, int]:
+def _modified_mtime(path: str) -> float:
     try:
-        st = os.stat(path)
-        return (st.st_mtime, st.st_size)
+        return float(os.stat(path).st_mtime)
     except OSError:
-        return (0.0, 0)
+        return 0.0
 
 
 def _created_mtime(path: str) -> float:
@@ -75,7 +70,7 @@ def sort_paths(paths: list[str], sort_by: SortKey, ascending: bool) -> list[str]
     if sort_by == "date_modified":
 
         def key_fn(p: str) -> float:
-            return _stat_tuple(p)[0]
+            return _modified_mtime(p)
 
         rev = not ascending
         return sorted(paths, key=key_fn, reverse=rev)
@@ -86,21 +81,9 @@ def sort_paths(paths: list[str], sort_by: SortKey, ascending: bool) -> list[str]
 
         rev = not ascending
         return sorted(paths, key=key_fn, reverse=rev)
-    if sort_by == "size":
-
-        def key_fn(p: str) -> int:
-            return _stat_tuple(p)[1]
-
-        rev = not ascending
-        return sorted(paths, key=key_fn, reverse=rev)
-    if sort_by == "type":
-
-        def key_fn(p: str) -> str:
-            return Path(p).suffix.lower()
-
-        rev = not ascending
-        return sorted(paths, key=key_fn, reverse=rev)
-    return sort_paths(paths, "name", ascending)
+    # Matches the first entry of SortControlBar.SORT_LABELS, which is what the
+    # combo falls back to for an unknown key.
+    return sort_paths(paths, "date_created", ascending)
 
 
 def filter_by_search(paths: list[str], query: str) -> list[str]:
@@ -109,27 +92,3 @@ def filter_by_search(paths: list[str], query: str) -> list[str]:
         return list(paths)
     return [p for p in paths if q in Path(p).name.lower()]
 
-
-def filter_by_tags(
-    paths: list[str],
-    tag_ids: list[int],
-    store: TagsStore,
-    match_mode: TagMatchMode = "all",
-) -> list[str]:
-    """Keep paths whose tags match the checked filter (all vs any)."""
-    if not tag_ids:
-        return list(paths)
-    if match_mode == "any":
-        matching = store.get_images_matching_any_tags(tag_ids)
-    else:
-        matching = store.get_images_matching_all_tags(tag_ids)
-    if matching is None:
-        return list(paths)
-    pairs: list[tuple[str, str]] = []
-    for p in paths:
-        try:
-            pairs.append((str(Path(p).resolve()), p))
-        except OSError:
-            pairs.append((p, p))
-    kept = matching & {norm for norm, _ in pairs}
-    return [orig for norm, orig in pairs if norm in kept]
