@@ -66,26 +66,46 @@ class _FilmstripStripList(QListWidget):
         self._owner = owner
         self._drag_press_pos: QPoint | None = None
         self._drag_anchor: QListWidgetItem | None = None
-        # True after left-press on an item until left-release; blocks QListView rubber-band
-        # selection on mouse-move (which was highlighting every thumb from press to cursor).
         self._left_gesture_from_item = False
+        self._ctrl_marquee = False
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
             it = self.itemAt(event.pos())
             if it is not None:
                 self._left_gesture_from_item = True
+                self._ctrl_marquee = False
                 self._owner._strip_mouse_press(it, event)
-                self._drag_anchor = it
-                self._drag_press_pos = event.pos()
+                ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                if not ctrl and not shift:
+                    self._drag_anchor = it
+                    self._drag_press_pos = event.pos()
+                else:
+                    self._drag_anchor = None
+                    self._drag_press_pos = None
                 event.accept()
                 return
-        self._left_gesture_from_item = False
-        self._drag_anchor = None
-        self._drag_press_pos = None
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self._ctrl_marquee = True
+                self._left_gesture_from_item = False
+                self._drag_anchor = None
+                self._drag_press_pos = None
+                super().mousePressEvent(event)
+                return
+            self._ctrl_marquee = False
+            self._left_gesture_from_item = False
+            self._drag_anchor = None
+            self._drag_press_pos = None
+            self._owner._clear_strip_multi_selection()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if self._ctrl_marquee:
+            super().mouseMoveEvent(event)
+            return
         if (
             self._drag_press_pos is not None
             and self._drag_anchor is not None
@@ -99,13 +119,22 @@ class _FilmstripStripList(QListWidget):
                 exec_external_file_drag(self, paths, preview)
             self._drag_press_pos = None
             self._drag_anchor = None
+            self._left_gesture_from_item = False
             return
         if self._left_gesture_from_item and (event.buttons() & Qt.MouseButton.LeftButton):
+            event.accept()
+            return
+        if event.buttons() & Qt.MouseButton.LeftButton:
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if self._ctrl_marquee and event.button() == Qt.MouseButton.LeftButton:
+            self._ctrl_marquee = False
+            self._owner._sync_strip_selection_from_list()
+            super().mouseReleaseEvent(event)
+            return
         sync = self._left_gesture_from_item and event.button() == Qt.MouseButton.LeftButton
         self._drag_press_pos = None
         self._drag_anchor = None
@@ -168,7 +197,8 @@ class FilmstripView(BaseImageView):
         self._strip_list.setSpacing(_STRIP_SPACING)
         self._strip_list.setUniformItemSizes(True)
         self._strip_list.setItemAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._strip_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self._strip_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._strip_list.setSelectionRectVisible(True)
         self._strip_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._strip_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._strip_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -217,6 +247,32 @@ class FilmstripView(BaseImageView):
         self._sync_strip_list_selection()
         self._set_preview(QPixmap())
         self.selection_changed.emit("")
+
+    def _clear_strip_multi_selection(self) -> None:
+        """Deselect strip thumbs without clearing the large preview."""
+        self._selected_paths.clear()
+        self._selected_path = None
+        self._anchor_path = None
+        self._sync_strip_list_selection()
+        self.selection_changed.emit("")
+
+    def _sync_strip_selection_from_list(self) -> None:
+        """After Ctrl+marquee, mirror QListWidget selection into owner state."""
+        selected: set[str] = set()
+        primary: str | None = None
+        for it in self._strip_list.selectedItems():
+            raw = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(raw, str):
+                selected.add(raw)
+                primary = raw
+        self._selected_paths = selected
+        self._selected_path = primary
+        if primary:
+            self._anchor_path = primary
+            self.selection_changed.emit(primary)
+        else:
+            self._anchor_path = None
+            self.selection_changed.emit("")
 
     def _apply_strip_style(self) -> None:
         self._strip_list.setStyleSheet(

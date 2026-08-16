@@ -1,6 +1,6 @@
 """Compact list with leading thumbnails.
 
-Multi-select: Ctrl+click (toggle) and Shift+click (range) via ExtendedSelection.
+Multi-select: Ctrl+click (toggle), Shift+click (range), Ctrl+drag marquee.
 Space: open fullscreen. Delete: delete selected files.
 """
 
@@ -22,6 +22,11 @@ from PySide6.QtWidgets import (
 from app.core.thumbnail_cache import ThumbnailCache, thumbnail_payload_to_pixmap
 from app.views.base_view import BaseImageView
 from app.views.file_drag import exec_external_file_drag
+from app.views.list_gesture import (
+    pick_paths_with_modifiers,
+    selected_paths_from_list,
+    sync_list_widget_selection,
+)
 from app.views.letterbox_icons import request_thumbnails_for_visible_list_items, visible_item_paths_with_margin
 from app.views.selection_overlay import NoFillSelectionDelegate
 
@@ -45,6 +50,7 @@ class ListView(BaseImageView):
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._list.setSelectionRectVisible(True)
         self._list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._on_list_context_menu)
@@ -61,7 +67,8 @@ class ListView(BaseImageView):
 
         self._list_drag_press_pos: QPoint | None = None
         self._list_drag_anchor: QListWidgetItem | None = None
-        self._suppress_list_vp_drag_select = False
+        self._anchor_path: str | None = None
+        self._ctrl_marquee = False
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -199,7 +206,6 @@ class ListView(BaseImageView):
     def _finish_list_external_drag_gesture(self) -> None:
         self._list_drag_press_pos = None
         self._list_drag_anchor = None
-        self._suppress_list_vp_drag_select = False
         self._list.setState(QAbstractItemView.State.NoState)
         QTimer.singleShot(0, self._deferred_reset_list_view_state)
 
@@ -256,18 +262,57 @@ class ListView(BaseImageView):
             if et == QEvent.Type.MouseButtonPress:
                 me = event
                 if isinstance(me, QMouseEvent) and me.button() == Qt.MouseButton.LeftButton:
-                    self._list_drag_anchor = self._list.itemAt(me.pos())
-                    self._list_drag_press_pos = me.pos() if self._list_drag_anchor else None
-                    self._suppress_list_vp_drag_select = self._list_drag_anchor is not None
-                else:
-                    self._list_drag_press_pos = None
+                    ctrl = bool(me.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                    shift = bool(me.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                    item = self._list.itemAt(me.pos())
+                    if ctrl and item is None:
+                        self._ctrl_marquee = True
+                        self._list_drag_anchor = None
+                        self._list_drag_press_pos = None
+                        return False
+                    self._ctrl_marquee = False
+                    if item is not None:
+                        raw = item.data(Qt.ItemDataRole.UserRole)
+                        if isinstance(raw, str):
+                            new_sel, new_anchor = pick_paths_with_modifiers(
+                                self._paths,
+                                selected_paths_from_list(self._list),
+                                raw,
+                                ctrl=ctrl,
+                                shift=shift,
+                                anchor=self._anchor_path,
+                            )
+                            self._anchor_path = new_anchor
+                            focus = raw if raw in new_sel else (
+                                next(iter(new_sel)) if new_sel else None
+                            )
+                            sync_list_widget_selection(
+                                self._list, self._path_to_item, new_sel, focus
+                            )
+                            self._on_selection_changed()
+                        if not ctrl and not shift:
+                            self._list_drag_anchor = item
+                            self._list_drag_press_pos = me.pos()
+                        else:
+                            self._list_drag_anchor = None
+                            self._list_drag_press_pos = None
+                        return True
+                    self._list.blockSignals(True)
+                    self._list.clearSelection()
+                    self._list.blockSignals(False)
+                    self._selected_path = None
+                    self._anchor_path = None
+                    self._on_selection_changed()
                     self._list_drag_anchor = None
-                    self._suppress_list_vp_drag_select = False
+                    self._list_drag_press_pos = None
+                    return True
                 return False
             if et == QEvent.Type.MouseMove:
                 me = event
                 if not isinstance(me, QMouseEvent):
                     return super().eventFilter(obj, event)
+                if self._ctrl_marquee:
+                    return False
                 if (
                     self._list_drag_press_pos is not None
                     and self._list_drag_anchor is not None
@@ -280,15 +325,17 @@ class ListView(BaseImageView):
                     if paths:
                         exec_external_file_drag(self._list, paths, preview)
                     self._finish_list_external_drag_gesture()
-                    return False
-                if self._suppress_list_vp_drag_select and (me.buttons() & Qt.MouseButton.LeftButton):
+                    return True
+                if me.buttons() & Qt.MouseButton.LeftButton:
                     return True
                 return False
             if et == QEvent.Type.MouseButtonRelease:
+                if self._ctrl_marquee and event.button() == Qt.MouseButton.LeftButton:
+                    self._ctrl_marquee = False
+                    return False
                 self._list_drag_press_pos = None
                 self._list_drag_anchor = None
-                self._suppress_list_vp_drag_select = False
-                return False
+                return True
             return super().eventFilter(obj, event)
 
         return super().eventFilter(obj, event)
@@ -297,11 +344,13 @@ class ListView(BaseImageView):
         items = self._list.selectedItems()
         if not items:
             self._selected_path = None
+            self._anchor_path = None
             self.selection_changed.emit("")
             return
         path = items[-1].data(Qt.ItemDataRole.UserRole)
         if isinstance(path, str):
             self._selected_path = path
+            self._anchor_path = path
             self.selection_changed.emit(path)
 
     def selected_paths(self) -> list[str]:
@@ -428,6 +477,7 @@ class ListView(BaseImageView):
         self._list.setCurrentItem(item)
         self._list.blockSignals(False)
         self._selected_path = path
+        self._anchor_path = path
         self.selection_changed.emit(path)
         self._list.scrollToItem(item)
         return True
